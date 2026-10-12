@@ -119,6 +119,12 @@ void setHoverBlocked(bool blocked);
 // UI code works in "UI coordinates": screenW()/screenH() and mouse() /
 // event positions are already divided by the scale.
 constexpr float DESIGN_W = 1100, DESIGN_H = 700;
+// The browser version (Chromebook) is drawn a bit smaller on top of that.
+#ifdef __EMSCRIPTEN__
+constexpr float BROWSER_FACTOR = 0.85f;
+#else
+constexpr float BROWSER_FACTOR = 1.0f;
+#endif
 void updateScale();                 // once per frame, before reading input
 float scale();                      // 1 = full size, < 1 = shrunk
 float screenW();                    // window size in UI coordinates

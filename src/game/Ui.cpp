@@ -211,6 +211,7 @@ static float g_scale = 1.0f;
 
 void ui::updateScale() {
     float s = std::min({1.0f, float(GetScreenWidth()) / DESIGN_W, float(GetScreenHeight()) / DESIGN_H});
+    s *= BROWSER_FACTOR;   // a bit smaller in the browser (small Chromebook screen)
     // steps of 2.5 % (fewer font sizes to create while the window is resized)
     g_scale = std::max(0.25f, std::floor(s * 40.0f) / 40.0f);
 }
