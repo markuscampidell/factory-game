@@ -62,8 +62,8 @@ Saves there are kept in the browser (separate from the Windows saves). There's n
 * Performance: 100,000 belts take about 1.7 ms per simulation tick.
 * Items without a sprite (limestone, concrete) are drawn as labeled tiles, so limestone patches are visible now.
 * Iron Plate recipe: 3 Iron Ingot gives 2 Iron Plate in 6 s. The old one was a test recipe that gave 40 plates and 40 coal.
-* A new game starts with 500 iron and 200 copper ingots (Python: 4300 iron, which filled the whole inventory).
-* Zoom: mouse wheel (around the cursor) or `+` / `-`, from 10% to 300%. Below 40% the game switches to a map view: machines are colored boxes, belts are gray, ore is shown as colored pixels. In map view WASD pans the map, the player can't move, and building or deleting is disabled (build mode is reset to None).
+* A new game starts with an empty inventory (Python: 4300 iron, which filled the whole inventory).
+* Zoom: mouse wheel (around the cursor) or `+` / `-`, from 10% to 300%. Zooming is smooth (eases to the new zoom in about 0.15 s), and so are M and leaving the map view. Below 40% the game switches to a map view: machines are colored boxes, belts are gray, ore is shown as colored pixels. In map view WASD pans the map, the player can't move, and building or deleting is disabled (build mode is reset to None).
 * Hand mining: hold right click on an ore tile (1 ore every 4 s, half a Miner's speed). If the inventory is full, "Inventory full" appears next to the tile and the ore stays in the ground.
 * Copy / paste: Shift + right click copies a machine's recipe, a belt's filter or a splitter's three filters (three separate clipboards). Shift + left click pastes; keep it held and sweep the mouse to paste onto many objects. A message above the object says what happened, or why it didn't work.
 * Bottom right, next to the hotbar: a Blueprints button (opens the blueprint list, like B) and an Alt button that shows / hides the output icons on machines (lit up = shown). Pressing Alt on its own does the same. Hovering over these buttons, the Menu button or a hotbar slot shows its name. Menu and Blueprints light up while what they open is open.

@@ -99,6 +99,11 @@ private:
     // ---- zoom / map view ----
     bool mapMode() const { return cam_.zoom < MAP_ZOOM; }
     void zoomBy(float factor, Vector2 anchor);
+    void setZoomTarget(float target, Vector2 anchor);
+    void stepZoom(float dt);        // per frame: glide cam_.zoom to targetZoom_
+    float targetZoom_ = 1.0f;       // where the smooth zoom is heading
+    Vector2 zoomAnchor_{};          // real window pixels kept fixed while zooming
+    bool zoomToPlayer_ = false;     // M / leaving the map: centre on the player
     void toggleMap();               // M / Map button
     float lastNormalZoom_ = 1.0f;   // zoom to return to when leaving the map
     Rectangle mapButtonRect() const;

@@ -70,26 +70,55 @@ GameScreen::~GameScreen() {
 // ---------------------------------------------------------------------------
 // Zoom / map view
 // ---------------------------------------------------------------------------
-// M / the Map button: jump into the map view around the player, or back
+// Zooming is smooth: zoomBy / toggleMap only change targetZoom_, and
+// stepZoom (once per frame) glides cam_.zoom towards it.
+
+// M / the Map button: glide into the map view around the player, or back
 // to the zoom you had before.
 void GameScreen::toggleMap() {
-    float target = mapMode() ? std::max(lastNormalZoom_, MAP_ZOOM) : 0.2f;
-    zoomBy(target / cam_.zoom, {ui::screenW() / 2, ui::screenH() / 2});
-    if (mapMode()) cam_.centerOn(player_.rect.cx(), player_.rect.cy());
+    bool toMap = targetZoom_ >= MAP_ZOOM;
+    if (toMap) lastNormalZoom_ = targetZoom_;
+    setZoomTarget(toMap ? 0.2f : std::max(lastNormalZoom_, MAP_ZOOM),
+                  {ui::screenW() / 2, ui::screenH() / 2});
+    zoomToPlayer_ = true;   // centre on the player while zooming
 }
 
 // `anchor` is in UI coordinates (mouse / event position)
 void GameScreen::zoomBy(float factor, Vector2 anchor) {
-    anchor = ui::toReal(anchor);   // the camera works in real window pixels
+    // remember the zoom before heading into the map view (M goes back to it)
+    if (targetZoom_ >= MAP_ZOOM && targetZoom_ * factor < MAP_ZOOM) lastNormalZoom_ = targetZoom_;
+    setZoomTarget(targetZoom_ * factor, anchor);
+}
+
+void GameScreen::setZoomTarget(float target, Vector2 anchor) {
+    targetZoom_ = std::clamp(target, MIN_ZOOM, MAX_ZOOM);
+    zoomAnchor_ = ui::toReal(anchor);   // the camera works in real window pixels
+    zoomToPlayer_ = false;
+    // back to the normal view: the camera glides back to the player, so new
+    // chunks are only ever generated around where the player actually is
+    if (mapMode() && targetZoom_ >= MAP_ZOOM) zoomToPlayer_ = true;
+}
+
+void GameScreen::stepZoom(float dt) {
+    if (cam_.zoom == targetZoom_) { zoomToPlayer_ = false; return; }
     bool wasMap = mapMode();
-    if (!wasMap) lastNormalZoom_ = cam_.zoom;
-    cam_.zoomAt(factor, anchor);
+    // ease out in log space (every doubling takes the same time); about
+    // 90 % of the way after 0.15 s
+    float k = 1.0f - std::exp(-dt * 15.0f);
+    float ratio = targetZoom_ / cam_.zoom;
+    float next = std::fabs(std::log(ratio)) < 0.002f ? targetZoom_ : cam_.zoom * std::pow(ratio, k);
+    if (zoomToPlayer_) {
+        // zoom around the screen centre and slide that centre to the player
+        float cx = cam_.x + cam_.viewW() / 2, cy = cam_.y + cam_.viewH() / 2;
+        cam_.zoom = next;
+        float t = next == targetZoom_ ? 1.0f : k;
+        cam_.centerOn(cx + (player_.rect.cx() - cx) * t, cy + (player_.rect.cy() - cy) * t);
+    } else {
+        cam_.zoomAt(next / cam_.zoom, zoomAnchor_);
+    }
     if (!wasMap && mapMode()) enterMapMode();
-    // back to normal view: the camera returns to the player, so new chunks
-    // are only ever generated around where the player actually is
-    if (wasMap && !mapMode()) cam_.centerOn(player_.rect.cx(), player_.rect.cy());
     // zooming around the mouse must never push the player off screen
-    if (!mapMode()) cam_.keepVisible(player_.rect);
+    if (!mapMode() && !zoomToPlayer_) cam_.keepVisible(player_.rect);
 }
 
 // Leaving the normal view: stop any build/delete action. Nothing is half
@@ -116,13 +145,15 @@ void GameScreen::newGame(const std::string& name) {
     save::newGame(world_, player_, cs, name);
     saveName_ = name;
     cam_.centerOn(player_.rect.cx(), player_.rect.cy());
+    targetZoom_ = cam_.zoom;
 }
 
 bool GameScreen::loadGame(const std::string& name, std::string* error) {
     CameraState cs;
     if (!save::loadGame(world_, player_, cs, name, error)) return false;
     saveName_ = name;
-    cam_.zoom = std::clamp(cs.zoom, MIN_ZOOM, MAX_ZOOM);
+    cam_.zoom = targetZoom_ = std::clamp(cs.zoom, MIN_ZOOM, MAX_ZOOM);
+    zoomToPlayer_ = false;
     showOutputs_ = cs.showOutputs;
     if (cs.valid) { cam_.x = cs.x; cam_.y = cs.y; }
     else cam_.centerOn(player_.rect.cx(), player_.rect.cy());
@@ -160,6 +191,7 @@ void GameScreen::update(float dt) {
         }
         if (steps == 10) accumulator_ = 0; // can't keep up: slow down rather than spiral
         interp_ = float(accumulator_ / step);
+        stepZoom(dt);
         perFrame();
     }
 }

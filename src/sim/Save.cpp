@@ -506,8 +506,6 @@ void newGame(World& w, Player& p, CameraState& cam, const std::string& name) {
     w.clear();
     w.seed = randomSeed();
     p = Player{};
-    p.inventory.tryAdd(itemByStringId("iron_ingot"), 500);
-    p.inventory.tryAdd(itemByStringId("copper_ingot"), 200);
     cam = {};
     saveGame(w, p, cam, name);
     setLastOpened(name);

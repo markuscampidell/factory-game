@@ -300,6 +300,8 @@ static void testSaveRoundTrip() {
     save::setSavesDir("test_saves");
     World w; Player p; CameraState cam;
     save::newGame(w, p, cam, "roundtrip");
+    p.inventory.tryAdd(IRON_INGOT, 500);   // new games start empty; enough to build the test layout
+    p.inventory.tryAdd(COPPER_INGOT, 200);
     Builder b(w, p);
     b.placeBelts({3, 3}, {10, 3}, Dir::Right, false);
     b.placeMachine(MachineType::Splitter, {11, 3}, Dir::Right, false, nullptr);

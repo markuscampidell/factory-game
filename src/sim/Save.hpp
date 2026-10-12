@@ -32,7 +32,7 @@ void setLastOpened(const std::string& name);
 
 bool saveGame(const World& w, const Player& p, const CameraState& cam, const std::string& name, std::string* error = nullptr);
 bool loadGame(World& w, Player& p, CameraState& cam, const std::string& name, std::string* error = nullptr);
-// Fresh world + starting inventory; also writes the save immediately.
+// Fresh world + empty inventory; also writes the save immediately.
 void newGame(World& w, Player& p, CameraState& cam, const std::string& name);
 
 // Blueprints are shared by all save games (saves/blueprints.bpjson).

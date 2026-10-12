@@ -121,7 +121,7 @@ void setHoverBlocked(bool blocked);
 constexpr float DESIGN_W = 1100, DESIGN_H = 700;
 // The browser version (Chromebook) is drawn a bit smaller on top of that.
 #ifdef __EMSCRIPTEN__
-constexpr float BROWSER_FACTOR = 0.85f;
+constexpr float BROWSER_FACTOR = 0.9f;
 #else
 constexpr float BROWSER_FACTOR = 1.0f;
 #endif
