@@ -32,6 +32,9 @@ void fitToPage() {
 void frame(App& app) {
 #ifdef __EMSCRIPTEN__
     fitToPage();
+#endif
+    ui::updateScale();   // smaller window -> smaller UI (before reading input)
+#ifdef __EMSCRIPTEN__
     if (!save::storageReady()) {   // saves are still being loaded from the browser
         BeginDrawing();
         ClearBackground(BLACK);
@@ -63,7 +66,11 @@ void frame(App& app) {
         }
         BeginDrawing();
         if (app.game) ClearBackground(BLACK);
-        else menu.draw(dt);
+        else {
+            ui::begin();
+            menu.draw(dt);
+            ui::end();
+        }
         EndDrawing();
         return;
     }

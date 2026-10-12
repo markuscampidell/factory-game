@@ -108,7 +108,31 @@ const Color BTN_DANGER{150, 0, 0, 255};         // cancel / delete / close
 // corner (if `closeButton`). Click handling: inRect(panelCloseRect(r), p).
 void drawPanel(Rectangle r, const std::string& title, bool closeButton = true);
 Rectangle panelCloseRect(Rectangle panel);
-namespace ui { void setHoverBlocked(bool blocked); }
+namespace ui {
+void setHoverBlocked(bool blocked);
+
+// ---- UI scale ----
+// Every UI (panels, menus, dialogs, hotbar, HUD) is laid out for a window of
+// at least DESIGN_W x DESIGN_H. In a smaller window all of it is drawn
+// smaller by the same factor (so the proportions stay); it never grows. The
+// world itself is not scaled.
+// UI code works in "UI coordinates": screenW()/screenH() and mouse() /
+// event positions are already divided by the scale.
+constexpr float DESIGN_W = 1100, DESIGN_H = 700;
+void updateScale();                 // once per frame, before reading input
+float scale();                      // 1 = full size, < 1 = shrunk
+float screenW();                    // window size in UI coordinates
+float screenH();
+Vector2 mouse();                    // mouse position in UI coordinates
+// Panels are centred in the space above the hotbar (bottom 82 px), so even
+// the tallest one (Handcrafting, 600) never hides behind it.
+constexpr float HOTBAR_SPACE = 82;
+inline float panelCenterY() { return (screenH() - HOTBAR_SPACE) / 2 + 4; }
+Vector2 toReal(Vector2 uiPos);      // UI coordinates -> real window pixels
+void begin();                       // draw UI from here on (BeginMode2D with the scale)
+void end();
+void beginScissor(Rectangle uiRect);   // BeginScissorMode for a UI rectangle
+}
 // Darkens everything behind a modal dialog.
 void drawModalShade();
 

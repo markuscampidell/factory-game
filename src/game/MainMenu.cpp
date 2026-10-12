@@ -78,7 +78,7 @@ MenuAction MainMenu::handleRoot(const Event& e) {
 
 void MainMenu::openNewGame(const std::string& initial) {
     screen_ = Screen::NewGame;
-    float w = float(GetScreenWidth()), h = float(GetScreenHeight());
+    float w = ui::screenW(), h = ui::screenH();
     nameInput_ = TextInput(centeredRect(w / 2, h / 2 - 20, 320, 44), initial);
 }
 
@@ -149,7 +149,7 @@ MenuAction MainMenu::handleLoadGame(const Event& e) {
 
 void MainMenu::openRename(const std::string& name) {
     renameTarget_ = name;
-    float w = float(GetScreenWidth()), h = float(GetScreenHeight());
+    float w = ui::screenW(), h = ui::screenH();
     renameInput_ = TextInput(centeredRect(w / 2, h / 2, 320, 44), name);
 }
 
@@ -196,7 +196,7 @@ MenuAction MainMenu::handleRename(const Event& e) {
 }
 
 void MainMenu::draw(float dt) {
-    float w = float(GetScreenWidth()), h = float(GetScreenHeight());
+    float w = ui::screenW(), h = ui::screenH();
     ClearBackground(hex("#987171"));
     ui::setHoverBlocked(confirm_ || message_ || renameInput_);
 
@@ -250,7 +250,7 @@ void MainMenu::draw(float dt) {
             viewport_ = {panel.x, top, panel.width, panel.y + panel.height - 12 - top};
             contentHeight_ = float(saves_.size()) * (rowH + spacing);
             scroll_ = clampScroll(scroll_, contentHeight_, viewport_.height);
-            BeginScissorMode(int(viewport_.x), int(viewport_.y), int(viewport_.width), int(viewport_.height));
+            ui::beginScissor({viewport_.x, viewport_.y, viewport_.width, viewport_.height});
             for (size_t i = 0; i < saves_.size(); ++i) {
                 Rectangle row{panel.x + 14, top + float(i) * (rowH + spacing) - scroll_, panel.width - 28 - 10, rowH};
                 if (row.y + row.height < viewport_.y || row.y > viewport_.y + viewport_.height) continue;

@@ -100,7 +100,7 @@ void GameScreen::finishSelection(Vec2i end) {
 // "Save blueprint" dialog
 // ---------------------------------------------------------------------------
 Rectangle GameScreen::bpSaveRect() const {
-    return centeredRect(std::floor(cam_.w / 2), std::floor(cam_.h / 2) - 40, 440, 250);
+    return centeredRect(std::floor(ui::screenW() / 2), std::floor(ui::screenH() / 2) - 40, 440, 250);
 }
 
 void GameScreen::savePendingBlueprint() {
@@ -174,7 +174,7 @@ void GameScreen::placeHeldBlueprint(Vector2 mouse) {
     Vec2i tl = Builder::blueprintTopLeft(placing_, screenToTile(mouse));
     bool replace = shiftDown();   // Shift: replace whatever is underneath
     Builder::BlueprintCheck c = builder_.checkBlueprint(placing_, tl, replace);
-    Vector2 w = cam_.screenToWorld(mouse);
+    Vector2 w = cam_.screenToWorld(ui::toReal(mouse));
     switch (c.status) {
         case PlaceStatus::Blocked: floatText(w.x, w.y, "Something is in the way (Shift: replace it)", BAD_RED); return;
         case PlaceStatus::NoOre: floatText(w.x, w.y, "A miner here would have no ore under it", BAD_RED); return;
@@ -309,7 +309,7 @@ void GameScreen::openBlueprintList() {
 }
 
 Rectangle GameScreen::bpListRect() const {
-    return centeredRect(std::floor(cam_.w / 2), std::floor(cam_.h / 2) - 20, LIST_W, LIST_H);
+    return centeredRect(std::floor(ui::screenW() / 2), std::floor(ui::panelCenterY()), LIST_W, LIST_H);
 }
 
 // ---------------------------------------------------------------------------
@@ -404,7 +404,7 @@ void GameScreen::drawCostInfo() {
     std::string line = "Needs: " + costText(cost);
     Color c = enough ? Color{20, 90, 30, 255} : Color{170, 20, 20, 255};
     float w = measure(line, 18).x + 28;
-    Rectangle r = centeredRect(cam_.w / 2, 120, w, 32);
+    Rectangle r = centeredRect(ui::screenW() / 2, 120, w, 32);
     fillRound(r, 10, ui::PANEL_BG);
     textCentered(line, r.x + r.width / 2, r.y + 16, 18, c, true);
 }
@@ -425,7 +425,7 @@ void GameScreen::drawBlueprintList() {
             line2 = "Right click: normal deleting   ESC: cancel";
         }
         float w = std::max(measure(line1, 18).x, measure(line2, 16).x) + 28;
-        Rectangle r = centeredRect(cam_.w / 2, 128, w, 52);   // top centre, out of the way
+        Rectangle r = centeredRect(ui::screenW() / 2, 128, w, 52);   // top centre, out of the way
         fillRound(r, 10, ui::PANEL_BG);
         textCentered(line1, r.x + r.width / 2, r.y + 15, 18, ui::TEXT, true);
         textCentered(line2, r.x + r.width / 2, r.y + 37, 16, ui::TEXT_DIM);
@@ -445,7 +445,7 @@ void GameScreen::drawBlueprintList() {
     }
     float content = float(blueprints_.size()) * ROW_H;
     bpListScroll_ = clampScroll(bpListScroll_, content, viewport.height);
-    BeginScissorMode(int(viewport.x), int(viewport.y), int(viewport.width), int(viewport.height));
+    ui::beginScissor({viewport.x, viewport.y, viewport.width, viewport.height});
     for (size_t i = 0; i < blueprints_.size(); ++i) {
         const Blueprint& bp = blueprints_[i];
         float y = top + float(i) * ROW_H - bpListScroll_;

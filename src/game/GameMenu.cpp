@@ -89,12 +89,12 @@ Rectangle saveAsPanelRect(float w, float h) { return centeredRect(std::floor(w /
 // HUD buttons: Menu (top right), Blueprints and Alt (bottom right, level
 // with the hotbar)
 // ---------------------------------------------------------------------------
-Rectangle GameScreen::blueprintButtonRect() const { return {cam_.w - 10 - 120, cam_.h - 62, 120, 32}; }
-Rectangle GameScreen::altButtonRect() const { return {cam_.w - 10 - 120 - 10 - 60, cam_.h - 62, 60, 32}; }
-Rectangle GameScreen::mapButtonRect() const { return {cam_.w - 10 - 120 - 10 - 60 - 10 - 70, cam_.h - 62, 70, 32}; }
+Rectangle GameScreen::blueprintButtonRect() const { return {ui::screenW() - 10 - 120, ui::screenH() - 62, 120, 32}; }
+Rectangle GameScreen::altButtonRect() const { return {ui::screenW() - 10 - 120 - 10 - 60, ui::screenH() - 62, 60, 32}; }
+Rectangle GameScreen::mapButtonRect() const { return {ui::screenW() - 10 - 120 - 10 - 60 - 10 - 70, ui::screenH() - 62, 70, 32}; }
 
 bool GameScreen::overHudButtons(Vector2 p) const {
-    return inRect(menuButtonRect(cam_.w), p) || inRect(blueprintButtonRect(), p) || inRect(altButtonRect(), p) ||
+    return inRect(menuButtonRect(ui::screenW()), p) || inRect(blueprintButtonRect(), p) || inRect(altButtonRect(), p) ||
            inRect(mapButtonRect(), p);
 }
 
@@ -103,7 +103,7 @@ std::string GameScreen::hudButtonTooltip(Vector2 p) const {
     if (inRect(altButtonRect(), p))
         return showOutputs_ ? "Machine outputs are shown - click or press Alt to hide them"
                             : "Machine outputs are hidden - click or press Alt to show them";
-    if (inRect(menuButtonRect(cam_.w), p)) return "Game menu (ESC)";
+    if (inRect(menuButtonRect(ui::screenW()), p)) return "Game menu (ESC)";
     if (inRect(mapButtonRect(), p)) return mapMode() ? "Back to the normal view (M)" : "Map view (M)";
     return "";
 }
@@ -112,14 +112,14 @@ std::string GameScreen::hudButtonTooltip(Vector2 p) const {
 // they are on top of everything; hidden while a dialog is open.
 void GameScreen::drawHudTooltips() {
     if (menuOpen_ || saveAsOpen_ || controlsOpen_ || exitConfirm_ || bpDeleteConfirm_ || bpSaveOpen_) return;
-    Vector2 m = GetMousePosition();
+    Vector2 m = ui::mouse();
     std::string tip = hotbarTooltip(m);
     if (tip.empty()) tip = hudButtonTooltip(m);
     if (!tip.empty()) drawTooltip(tip, m);
 }
 
 void GameScreen::openSaveAs(const std::string& initial) {
-    saveAsInput_ = TextInput(centeredRect(std::floor(cam_.w / 2), std::floor(cam_.h / 2) - 10, 320, 44), initial);
+    saveAsInput_ = TextInput(centeredRect(std::floor(ui::screenW() / 2), std::floor(ui::screenH() / 2) - 10, 320, 44), initial);
     saveAsOpen_ = true;
 }
 
@@ -144,7 +144,7 @@ void GameScreen::submitSaveAs(const std::string& raw) {
 }
 
 bool GameScreen::menuBarHandle(const Event& e) {
-    float w = cam_.w, h = cam_.h;
+    float w = ui::screenW(), h = ui::screenH();
     if (exitConfirm_) {
         DialogResult r = exitConfirm_->handle(e);
         if (r == DialogResult::Yes) { saveNow(saveName_); returnToMenu_ = true; exitConfirm_.reset(); menuOpen_ = false; }
@@ -245,7 +245,7 @@ bool GameScreen::menuBarHandle(const Event& e) {
 }
 
 void GameScreen::drawMenuBar() {
-    float w = cam_.w;
+    float w = ui::screenW();
     // Menu / Blueprints light up while what they open is open
     auto hudButton = [](Rectangle r, const char* label, bool active) { drawButton(r, label, ui::BTN, 18, active); };
     hudButton(menuButtonRect(w), "Menu", menuOpen_ || saveAsOpen_ || controlsOpen_ || exitConfirm_ != nullptr);
@@ -265,7 +265,7 @@ bool GameScreen::anyModalOpen() const {
 }
 
 void GameScreen::drawModals(float dt) {
-    float w = cam_.w, h = cam_.h;
+    float w = ui::screenW(), h = ui::screenH();
     // The Game Menu stays visible under Save As / Controls / the exit
     // question; only the topmost one reacts to the mouse.
     if (menuOpen_) {
@@ -331,7 +331,7 @@ ControlsLayout controlsLayout(float w, float h) {
 } // namespace
 
 bool GameScreen::controlsHandle(const Event& e) {
-    ControlsLayout L = controlsLayout(cam_.w, cam_.h);
+    ControlsLayout L = controlsLayout(ui::screenW(), ui::screenH());
     if (e.type == EvType::KeyDown && e.key == KEY_ESCAPE) { controlsOpen_ = false; return true; }
     if (e.type == EvType::MouseDown && e.button == MB_LEFT) {
         if (inRect(L.close, e.pos) || !inRect(L.box, e.pos)) { controlsOpen_ = false; return true; }
@@ -344,12 +344,12 @@ bool GameScreen::controlsHandle(const Event& e) {
 }
 
 void GameScreen::drawControls() {
-    ControlsLayout L = controlsLayout(cam_.w, cam_.h);
+    ControlsLayout L = controlsLayout(ui::screenW(), ui::screenH());
     drawModalShade();
     drawPanel(L.box, "Controls");
     controlsScroll_ = clampScroll(controlsScroll_, L.content, L.viewport.height);
 
-    BeginScissorMode(int(L.viewport.x), int(L.viewport.y), int(L.viewport.width), int(L.viewport.height));
+    ui::beginScissor({L.viewport.x, L.viewport.y, L.viewport.width, L.viewport.height});
     float y = L.viewport.y - controlsScroll_;
     bool first = true;
     for (auto& sec : controlSections()) {

@@ -56,14 +56,14 @@ Vector2 GameScreen::inventorySize() const {
 }
 
 Rectangle GameScreen::centeredPanel(Vector2 s) const {
-    return {std::floor(cam_.w / 2 - s.x / 2), std::floor(cam_.h / 2 - s.y / 2), s.x, s.y};
+    return {std::floor(ui::screenW() / 2 - s.x / 2), std::floor(ui::panelCenterY() - s.y / 2), s.x, s.y};
 }
 
 // The smallest rectangle around both panels is centred; tops are aligned.
 Rectangle GameScreen::pairRect(Vector2 partner, bool left) const {
     Vector2 inv = inventorySize();
     float w = inv.x + PAIR_GAP + partner.x, h = std::max(inv.y, partner.y);
-    float x0 = std::floor(cam_.w / 2 - w / 2), y0 = std::floor(cam_.h / 2 - h / 2);
+    float x0 = std::floor(ui::screenW() / 2 - w / 2), y0 = std::floor(ui::panelCenterY() - h / 2);
     return left ? Rectangle{x0, y0, inv.x, inv.y} : Rectangle{x0 + inv.x + PAIR_GAP, y0, partner.x, partner.y};
 }
 
@@ -79,13 +79,13 @@ Rectangle GameScreen::storageRect() const { return invOpen_ ? pairRect(STORAGE_S
 Rectangle GameScreen::beltFilterRect() const {
     float w = filterContentW() + FP_PICKER_GAP + pickerW() + FP_PAD * 2;
     float h = FP_TITLE + std::max(filterContentH(false), pickerH()) + FP_PAD;
-    return centeredRect(std::floor(cam_.w / 2), std::floor(cam_.h / 2), w, h);
+    return centeredRect(std::floor(ui::screenW() / 2), std::floor(ui::panelCenterY()), w, h);
 }
 Rectangle GameScreen::splitterFilterRect() const {
     float cols = filterContentW() * 3 + FP_COLUMN_GAP * 2;
     float w = cols + FP_PICKER_GAP + pickerW() + FP_PAD * 2;
     float h = FP_TITLE + std::max(filterContentH(true), pickerH()) + FP_PAD;
-    return centeredRect(std::floor(cam_.w / 2), std::floor(cam_.h / 2), w, h);
+    return centeredRect(std::floor(ui::screenW() / 2), std::floor(ui::panelCenterY()), w, h);
 }
 
 // ---------------------------------------------------------------------------
@@ -183,11 +183,11 @@ void GameScreen::drawRecipeButton(Rectangle r, const Recipe& rc, bool selected, 
 // Recipe details while hovering a recipe button: next to the mouse like a
 // tooltip, always fully on screen.
 void GameScreen::drawRecipeInfoNearMouse(const Recipe& rc) {
-    Vector2 m = GetMousePosition();
+    Vector2 m = ui::mouse();
     const float w = 320, h = 180;
     float x = m.x + 18, y = m.y + 18;
-    if (x + w > cam_.w - 5) x = m.x - 18 - w;
-    if (y + h > cam_.h - 5) y = cam_.h - 5 - h;
+    if (x + w > ui::screenW() - 5) x = m.x - 18 - w;
+    if (y + h > ui::screenH() - 5) y = ui::screenH() - 5 - h;
     drawRecipePanel(rc, {std::max(5.0f, x), std::max(5.0f, y), w, h});
 }
 
@@ -495,12 +495,12 @@ void GameScreen::drawCraftPanel() {
 
     std::vector<HoverEntry> hover;
     const Recipe* hoveredRecipe = nullptr;
-    BeginScissorMode(int(viewport.x), int(viewport.y), int(viewport.width), int(viewport.height));
+    ui::beginScissor({viewport.x, viewport.y, viewport.width, viewport.height});
     for (size_t i = 0; i < recipes.size(); ++i) {
         Rectangle row{r.x + 10, viewport.y - craftScroll_ + float(i) * rowH, r.width - 34, 40};
         if (row.y + row.height < viewport.y || row.y > viewport.y + viewport.height) continue;
         // only light up the part of the row that is visible
-        bool visible = inRect(viewport, GetMousePosition());
+        bool visible = inRect(viewport, ui::mouse());
         if (!visible) ui::setHoverBlocked(true);
         drawRecipeButton(row, *recipes[i], int(i) == player_.selectedRecipe, hover);
         if (!visible) ui::setHoverBlocked(anyModalOpen());

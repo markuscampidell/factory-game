@@ -38,7 +38,7 @@ void GameScreen::draw() {
     // what's under the mouse right now (delete target / hover highlight)
     validatePanels();
     hoveredDelete_ = mode_ == BuildMode::Deleting ? world_.refAt(mouseTile()) : 0;
-    Vector2 mouse = GetMousePosition();
+    Vector2 mouse = ui::mouse();
     hovered_ = (!menuOpen_ && interactionAllowed(mouse)) ? objectAt(mouse) : 0;
     hoveredOre_.reset();
     if (!menuOpen_ && hovered_ == 0 && interactionAllowed(mouse)) {
@@ -66,9 +66,11 @@ void GameScreen::draw() {
         drawHandMining();
     }
     EndMode2D();
-    drawFloatTexts(dt);
     if (mode_ == BuildMode::Building) DrawRectangle(0, 0, int(cam_.w), int(cam_.h), BUILD_TINT);
     else if (mode_ == BuildMode::Deleting) DrawRectangle(0, 0, int(cam_.w), int(cam_.h), DELETE_TINT);
+
+    ui::begin();   // ---- everything below is UI (scaled down in small windows) ----
+    drawFloatTexts(dt);
 
     drawMachinePanel();
     drawInventory();
@@ -93,12 +95,13 @@ void GameScreen::draw() {
     // notifications on top of everything ("Saved as ..." over the Game Menu)
     if (toastTime_ > 0 && !toast_.empty()) {
         Vector2 m = measure(toast_, 20);
-        Rectangle r = centeredRect(cam_.w / 2, 70, m.x + 30, m.y + 16);
+        Rectangle r = centeredRect(ui::screenW() / 2, 70, m.x + 30, m.y + 16);
         unsigned char a = (unsigned char)(std::min(1.0f, toastTime_) * 230);
         fillRound(r, 10, Color{ui::PANEL_BG.r, ui::PANEL_BG.g, ui::PANEL_BG.b, a});
         textCentered(toast_, r.x + r.width / 2, r.y + r.height / 2, 20, Color{0, 0, 0, a}, true);
     }
     drawCursor();
+    ui::end();
 }
 
 // ---------------------------------------------------------------------------
@@ -507,7 +510,7 @@ void GameScreen::drawDeleteGhost() {
 }
 
 void GameScreen::drawCursor() {
-    Vector2 m = GetMousePosition();
+    Vector2 m = ui::mouse();
     Color c = mode_ == BuildMode::Building ? Color{255, 200, 50, 150}
             : mode_ == BuildMode::Deleting ? Color{255, 100, 150, 120}
                                            : Color{255, 255, 255, 100};
@@ -535,9 +538,9 @@ void GameScreen::drawFloatTexts(float dt) {
                       floatTexts_.end());
     if (mapMode()) return;
     for (auto& f : floatTexts_) {
-        // world -> screen, drifting upwards and fading out
-        float sx = (f.wx - cam_.x) * cam_.zoom;
-        float sy = (f.wy - cam_.y) * cam_.zoom - 12 - f.age * 25;
+        // world -> screen (UI coordinates), drifting upwards and fading out
+        float sx = (f.wx - cam_.x) * cam_.zoom / ui::scale();
+        float sy = (f.wy - cam_.y) * cam_.zoom / ui::scale() - 12 - f.age * 25;
         unsigned char a = (unsigned char)(255 * std::min(1.0f, (LIFE - f.age) / 0.5f));
         Vector2 m = measure(f.text, 18, true);
         Rectangle bg{sx - m.x / 2 - 6, sy - m.y / 2 - 3, m.x + 12, m.y + 6};

@@ -10,7 +10,7 @@
 // ---------------------------------------------------------------------------
 std::vector<Event> pollEvents() {
     std::vector<Event> out;
-    Vector2 mouse = GetMousePosition();
+    Vector2 mouse = ui::mouse();   // UI coordinates
 
     // Key presses, in the order they happened.
     std::vector<int> pressed;
@@ -178,14 +178,14 @@ void drawTooltip(const std::string& s, Vector2 at) {
     Vector2 m = measure(s, size);
     float w = m.x + pad * 2, h = m.y + pad * 2;
     float x = at.x + 15, y = at.y + 15;
-    if (x + w > GetScreenWidth()) x = GetScreenWidth() - w - 5;
-    if (y + h > GetScreenHeight()) y = GetScreenHeight() - h - 5;
+    if (x + w > ui::screenW()) x = ui::screenW() - w - 5;
+    if (y + h > ui::screenH()) y = ui::screenH() - h - 5;
     fillRound({x, y, w, h}, 12, ui::PANEL_BG);
     text(s, x + pad, y + pad, size, BLACK);
 }
 
 void drawHoveredItemTooltip(const std::vector<HoverEntry>& entries) {
-    Vector2 mouse = GetMousePosition();
+    Vector2 mouse = ui::mouse();
     for (auto& e : entries) {
         if (e.item == NO_ITEM || !inRect(e.rect, mouse)) continue;
         drawTooltip(itemDef(e.item).name, mouse);
@@ -207,9 +207,31 @@ void drawScrollbar(Rectangle track, float offset, float content, float viewport)
 }
 
 static bool g_hoverBlocked = false;
+static float g_scale = 1.0f;
+
+void ui::updateScale() {
+    float s = std::min({1.0f, float(GetScreenWidth()) / DESIGN_W, float(GetScreenHeight()) / DESIGN_H});
+    // steps of 2.5 % (fewer font sizes to create while the window is resized)
+    g_scale = std::max(0.25f, std::floor(s * 40.0f) / 40.0f);
+}
+float ui::scale() { return g_scale; }
+float ui::screenW() { return float(GetScreenWidth()) / g_scale; }
+float ui::screenH() { return float(GetScreenHeight()) / g_scale; }
+Vector2 ui::mouse() { Vector2 m = GetMousePosition(); return {m.x / g_scale, m.y / g_scale}; }
+Vector2 ui::toReal(Vector2 p) { return {p.x * g_scale, p.y * g_scale}; }
+void ui::begin() {
+    Camera2D c{};
+    c.zoom = g_scale;
+    BeginMode2D(c);
+}
+void ui::end() { EndMode2D(); }
+void ui::beginScissor(Rectangle r) {
+    BeginScissorMode(int(std::floor(r.x * g_scale)), int(std::floor(r.y * g_scale)),
+                     int(std::ceil(r.width * g_scale)), int(std::ceil(r.height * g_scale)));
+}
 void ui::setHoverBlocked(bool blocked) { g_hoverBlocked = blocked; }
 
-bool hovered(Rectangle r) { return !g_hoverBlocked && inRect(r, GetMousePosition()); }
+bool hovered(Rectangle r) { return !g_hoverBlocked && inRect(r, ui::mouse()); }
 
 Color brighten(Color c, int a) {
     auto up = [a](unsigned char v) { return (unsigned char)std::min(255, int(v) + a); };
@@ -244,7 +266,7 @@ void drawPanel(Rectangle r, const std::string& title, bool closeButton) {
 }
 
 void drawModalShade() {
-    DrawRectangle(0, 0, GetScreenWidth(), GetScreenHeight(), Color{0, 0, 0, 90});
+    DrawRectangle(0, 0, int(std::ceil(ui::screenW())), int(std::ceil(ui::screenH())), Color{0, 0, 0, 90});
 }
 
 // ---------------------------------------------------------------------------
@@ -337,7 +359,7 @@ DialogResult ConfirmDialog::handle(const Event& e) {
 }
 
 void ConfirmDialog::draw() {
-    float w = float(GetScreenWidth()), h = float(GetScreenHeight());
+    float w = ui::screenW(), h = ui::screenH();
     box_ = centeredRect(w / 2, h / 2, 400, 140);
     drawModalShade();
     drawPanel(box_, "", closeButton);
@@ -355,7 +377,7 @@ bool MessageDialog::handle(const Event& e) {
 }
 
 void MessageDialog::draw() {
-    float w = float(GetScreenWidth()), h = float(GetScreenHeight());
+    float w = ui::screenW(), h = ui::screenH();
     Rectangle box = centeredRect(w / 2, h / 2, 550, 150);
     drawModalShade();
     drawPanel(box, "", false);

@@ -1,5 +1,7 @@
 // game/Assets.cpp
 #include "Assets.hpp"
+#include "Ui.hpp"
+#include <cmath>
 #include <map>
 #include <vector>
 
@@ -122,13 +124,16 @@ const Texture2D& belt(uint8_t mask, Dir out) {
 }
 
 const Font& font(int size, bool bold) {
-    auto key = std::make_pair(size, bold);
+    // The glyphs are made at the size they really end up on screen (UI
+    // scale), so shrunk text is still sharp. Callers keep using `size`.
+    int px = std::max(6, int(std::lround(size * ui::scale())));
+    auto key = std::make_pair(px * 2 + (bold ? 1 : 0), bold);
     auto it = g_fonts.find(key);
     if (it != g_fonts.end()) return it->second;
     Font f;
     const std::string& path = bold ? g_boldPath : g_fontPath;
     if (!path.empty()) {
-        f = LoadFontEx(path.c_str(), size, nullptr, 0);
+        f = LoadFontEx(path.c_str(), px, nullptr, 0);
         SetTextureFilter(f.texture, TEXTURE_FILTER_BILINEAR);
     } else {
         f = GetFontDefault();

@@ -74,11 +74,13 @@ GameScreen::~GameScreen() {
 // to the zoom you had before.
 void GameScreen::toggleMap() {
     float target = mapMode() ? std::max(lastNormalZoom_, MAP_ZOOM) : 0.2f;
-    zoomBy(target / cam_.zoom, {cam_.w / 2, cam_.h / 2});
+    zoomBy(target / cam_.zoom, {ui::screenW() / 2, ui::screenH() / 2});
     if (mapMode()) cam_.centerOn(player_.rect.cx(), player_.rect.cy());
 }
 
+// `anchor` is in UI coordinates (mouse / event position)
 void GameScreen::zoomBy(float factor, Vector2 anchor) {
+    anchor = ui::toReal(anchor);   // the camera works in real window pixels
     bool wasMap = mapMode();
     if (!wasMap) lastNormalZoom_ = cam_.zoom;
     cam_.zoomAt(factor, anchor);
@@ -189,7 +191,7 @@ void GameScreen::tick() {
 // ---------------------------------------------------------------------------
 void GameScreen::updateHandMining() {
     if (fullMessageCooldown_ > 0) --fullMessageCooldown_;
-    Vector2 m = GetMousePosition();
+    Vector2 m = ui::mouse();
     bool holding = IsMouseButtonDown(MOUSE_BUTTON_RIGHT) && !shiftDown() && !mapMode() &&
                    mode_ == BuildMode::None && !mouseOverOpenPanel(m);
     Vec2i tile = screenToTile(m);
@@ -241,7 +243,7 @@ bool GameScreen::copyPasteClick(const Event& e) {
 
 void GameScreen::updatePasteHold() {
     if (!pasteHolding_) return;
-    Vector2 m = GetMousePosition();
+    Vector2 m = ui::mouse();
     if (!IsMouseButtonDown(MOUSE_BUTTON_LEFT) || !shiftDown()) { pasteHolding_ = false; return; }
     if (copyPasteAllowed(m)) pasteAt(m);
 }
@@ -410,8 +412,8 @@ void GameScreen::handleKeys(const Event& e) {
         if (!closeTopPanel()) resetBuildState();
         return;
     }
-    if (e.key == KEY_EQUAL || e.key == KEY_KP_ADD) { zoomBy(1.25f, {cam_.w / 2, cam_.h / 2}); return; }
-    if (e.key == KEY_MINUS || e.key == KEY_KP_SUBTRACT) { zoomBy(1 / 1.25f, {cam_.w / 2, cam_.h / 2}); return; }
+    if (e.key == KEY_EQUAL || e.key == KEY_KP_ADD) { zoomBy(1.25f, {ui::screenW() / 2, ui::screenH() / 2}); return; }
+    if (e.key == KEY_MINUS || e.key == KEY_KP_SUBTRACT) { zoomBy(1 / 1.25f, {ui::screenW() / 2, ui::screenH() / 2}); return; }
     if (e.key == KEY_M) { toggleMap(); return; }
     if (e.key == KEY_X) {
         closeAllPanels();
@@ -519,11 +521,11 @@ void GameScreen::cancelBuildOrDelete() {
 }
 
 Vec2i GameScreen::screenToTile(Vector2 p) const {
-    Vector2 w = cam_.screenToWorld(p);
+    Vector2 w = cam_.screenToWorld(ui::toReal(p));   // p is in UI coordinates
     return {int(std::floor(w.x / CELL_SIZE)), int(std::floor(w.y / CELL_SIZE))};
 }
 
-Vec2i GameScreen::mouseTile() const { return screenToTile(GetMousePosition()); }
+Vec2i GameScreen::mouseTile() const { return screenToTile(ui::mouse()); }
 
 // ---------------------------------------------------------------------------
 // Placing & deleting
@@ -562,9 +564,9 @@ void GameScreen::updateDrag() {
     if (invOpen_ || machinePanel_ >= 0 || storagePanel_ >= 0 || beltPanel_ >= 0 || splitterPanel_ >= 0) return;
     if (!IsMouseButtonDown(MOUSE_BUTTON_LEFT)) return;
     if (mode_ == BuildMode::Building && selected_ == Buildable::Belt) return;
-    if (overHudButtons(GetMousePosition())) return;
+    if (overHudButtons(ui::mouse())) return;
     // don't build/delete through the hotbar or the menu button
-    for (auto& r : hotbarRects()) if (inRect(r, GetMousePosition())) return;
+    for (auto& r : hotbarRects()) if (inRect(r, ui::mouse())) return;
     Vec2i tile = mouseTile();
     if (mode_ == BuildMode::Deleting) tryDeleteAt(tile);
     else if (mode_ == BuildMode::Building) tryPlaceMachineAt(tile);
@@ -690,7 +692,7 @@ void GameScreen::worldClick(const Event& e) {
 
 void GameScreen::pickKey(const Event& e) {
     if (e.type != EvType::KeyDown || e.key != KEY_C || ctrlDown()) return;
-    Vector2 m = GetMousePosition();
+    Vector2 m = ui::mouse();
     if (!interactionAllowed(m)) return;
     TileRef r = objectAt(m);
     if (r == 0) return;
@@ -805,7 +807,7 @@ constexpr float SLOT = 56, GAP = 8, MARGIN_BOTTOM = 18;
 
 std::vector<Rectangle> GameScreen::hotbarRects() const {
     std::vector<Rectangle> rs;
-    float w = cam_.w, h = cam_.h;
+    float w = ui::screenW(), h = ui::screenH();
     float total = HOTBAR_N * SLOT + (HOTBAR_N - 1) * GAP;
     float sx = std::floor(w / 2 - total / 2), y = h - SLOT - MARGIN_BOTTOM;
     for (int i = 0; i < HOTBAR_N; ++i) rs.push_back({sx + i * (SLOT + GAP), y, SLOT, SLOT});
