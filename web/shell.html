@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Satis Factorio Program</title>
+<style>
+  html, body { margin: 0; padding: 0; height: 100%; overflow: hidden; background: #000; }
+  canvas { display: block; outline: none; }
+  #status { position: absolute; left: 20px; top: 20px; color: #ddd; font: 18px sans-serif; }
+</style>
+</head>
+<body>
+<div id="status">Loading the game...</div>
+<canvas id="canvas" tabindex="1"></canvas>
+<script>
+  var canvas = document.getElementById('canvas');
+  // right click is used by the game, not for the browser menu
+  canvas.addEventListener('contextmenu', function (e) { e.preventDefault(); });
+  // keep keyboard input in the game (Tab, Alt, ...) and stop middle-click autoscroll
+  canvas.addEventListener('mousedown', function (e) { canvas.focus(); if (e.button === 1) e.preventDefault(); });
+  window.addEventListener('keydown', function (e) {
+    if (['Tab', 'Alt', 'F1'].indexOf(e.key) >= 0 || (e.ctrlKey && 'bcvx'.indexOf(e.key.toLowerCase()) >= 0)) e.preventDefault();
+  });
+  var Module = {
+    canvas: canvas,
+    setStatus: function (t) { document.getElementById('status').textContent = t; if (!t) document.getElementById('status').style.display = 'none'; },
+    onRuntimeInitialized: function () { document.getElementById('status').style.display = 'none'; canvas.focus(); }
+  };
+</script>
+{{{ SCRIPT }}}
+</body>
+</html>

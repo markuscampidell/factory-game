@@ -1,0 +1,55 @@
+# Builds the browser version and puts it on GitHub Pages, every time you
+# push (publish_web.bat). The game is then at https://<user>.github.io/<repo>/
+name: Browser version
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Simulation tests (nothing is published if they fail)
+        run: |
+          g++ -std=c++17 -O2 -Ithird_party src/core/*.cpp src/sim/*.cpp tests/sim_tests.cpp -o sim_tests
+          ./sim_tests tests/terrain_expected_seed424242.txt
+
+      - uses: mymindstorm/setup-emsdk@v14
+        with:
+          version: 3.1.64
+
+      - name: Cache raylib (web)
+        uses: actions/cache@v4
+        with:
+          path: build-web/raylib
+          key: raylib-5.5-web-emsdk-3.1.64
+
+      - name: Build the browser version
+        run: bash web/build_web.sh
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: build-web/site
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

@@ -1,0 +1,14 @@
+build/
+*.exe
+*.dll
+*.o
+saves/
+test_saves/
+build_log.txt
+build_status.txt
+build.request
+build-web/
+_to_delete/
+build_static.log
+InstallationLog.txt
+sim_tests
