@@ -124,7 +124,7 @@ private:
     static constexpr int ZOOM_GATE_STEPS = 10;
     static constexpr double ZOOM_GATE_TIME = 1.0;
     static constexpr double ZOOM_SPIN_PAUSE = 0.35;
-    static constexpr double ZOOM_EDGE_HOLD = 0.5;
+    static constexpr double ZOOM_EDGE_HOLD = 0.25;
     double zoomLastNotch_ = -10;    // GetTime() of the last zoom notch of any kind
     double zoomEdgeSince_ = -1;     // when a spin reached the edge (-1: not holding)
     double zoomSpinHintUntil_ = 0;  // show "stop, then ..." until then
