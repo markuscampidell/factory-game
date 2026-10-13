@@ -14,6 +14,7 @@ const Color BAD_RED{255, 110, 110, 255};
 std::string objects(int n) { return std::to_string(n) + (n == 1 ? " object" : " objects"); }
 
 constexpr float LIST_W = 560, LIST_H = 470, ROW_H = 56, LIST_TOP = 60;
+constexpr float BOOK_H = 46, EMPTY_BOOK_H = 30, BOOK_INDENT = 28, DRAG_MIN = 6;
 } // namespace
 
 // ---------------------------------------------------------------------------
@@ -111,8 +112,9 @@ void GameScreen::savePendingBlueprint() {
     for (auto& b : blueprints_)
         if (b.name == name) { bpSaveError_ = "A blueprint with this name already exists"; return; }
     bpPending_.name = name;
+    bpPending_.book = 0;   // new blueprints start outside the books
     blueprints_.push_back(bpPending_);
-    save::saveBlueprints(blueprints_);
+    saveBlueprintList();
     notify("Saved blueprint '" + name + "' (press B to see your blueprints)");
     bpSaveOpen_ = false;
     bpNameInput_.reset();
@@ -198,14 +200,25 @@ bool GameScreen::overUi(Vector2 p) const {
 // ---------------------------------------------------------------------------
 bool GameScreen::blueprintHandle(const Event& e) {
     if (bpSaveHandle(e)) return true;
-    // delete confirmation (modal)
+    if (bpBookDialogHandle(e)) return true;
+    // delete confirmation (modal) - a blueprint, or a book with everything in it
     if (bpDeleteConfirm_) {
         DialogResult r = bpDeleteConfirm_->handle(e);
-        if (r == DialogResult::Yes && bpDeleteIndex_ >= 0 && bpDeleteIndex_ < int(blueprints_.size())) {
-            blueprints_.erase(blueprints_.begin() + bpDeleteIndex_);
-            save::saveBlueprints(blueprints_);
+        if (r == DialogResult::Yes) {
+            if (bpDeleteBookId_ > 0) {
+                int id = bpDeleteBookId_;
+                blueprints_.erase(std::remove_if(blueprints_.begin(), blueprints_.end(), [&](const Blueprint& b) { return b.book == id; }),
+                                  blueprints_.end());
+                bpBooks_.erase(std::remove_if(bpBooks_.begin(), bpBooks_.end(), [&](const BlueprintBook& b) { return b.id == id; }),
+                               bpBooks_.end());
+                bpFold_.setOpen(bookKey(id), false);
+                saveBlueprintList();
+            } else if (bpDeleteIndex_ >= 0 && bpDeleteIndex_ < int(blueprints_.size())) {
+                blueprints_.erase(blueprints_.begin() + bpDeleteIndex_);
+                saveBlueprintList();
+            }
         }
-        if (r != DialogResult::None) { bpDeleteConfirm_.reset(); bpDeleteIndex_ = -1; }
+        if (r != DialogResult::None) { bpDeleteConfirm_.reset(); bpDeleteIndex_ = -1; bpDeleteBookId_ = 0; }
         return true;
     }
 
@@ -235,28 +248,72 @@ bool GameScreen::blueprintHandle(const Event& e) {
     // the blueprint list panel
     if (bpListOpen_) {
         Rectangle r = bpListRect();
+        // drag & drop: let go over a book (or a blueprint in it) to put the
+        // blueprint into that book, anywhere else in the list to take it out
+        if (e.type == EvType::MouseUp && e.button == MB_LEFT && bpDragIndex_ >= 0) {
+            int i = bpDragIndex_;
+            bool moved = bpDragging();
+            bpDragIndex_ = -1;
+            if (moved && i < int(blueprints_.size())) {
+                int target = bpDropBook(e.pos);
+                if (target >= 0 && target != blueprints_[size_t(i)].book) {
+                    blueprints_[size_t(i)].book = target;
+                    if (target > 0) bpFold_.setOpen(bookKey(target), true);
+                    saveBlueprintList();
+                }
+            }
+            return true;
+        }
         if (e.type == EvType::Wheel && inRect(r, e.pos)) {
-            float content = float(blueprints_.size()) * ROW_H;
-            bpListScroll_ = clampScroll(bpListScroll_ - e.wheel * 40, content, r.height - LIST_TOP - 16);
+            auto rows = bpListRows();
+            float content = rows.empty() ? 0 : rows.back().y + rows.back().h;
+            bpListScroll_ = clampScroll(bpListScroll_ - e.wheel * 40, content, r.height - LIST_TOP - 8);
             return true;
         }
         if (e.type == EvType::MouseDown && e.button == MB_LEFT && inRect(r, e.pos)) {
             Rectangle close = panelCloseRect(r);
             Rectangle add{close.x - 10 - 90, r.y + 6, 90, 32};
+            Rectangle addBook{r.x + 12, r.y + 6, 190, 32};
             if (inRect(add, e.pos)) { startSelecting(true); return true; }
+            if (inRect(addBook, e.pos)) { openBookDialog(0); return true; }
             if (inRect(close, e.pos)) { closePanel(Panel::Blueprints); return true; }
-            float top = r.y + LIST_TOP;
-            for (size_t i = 0; i < blueprints_.size(); ++i) {
-                float y = top + float(i) * ROW_H - bpListScroll_;
-                if (y < top - 1 || y + ROW_H > r.y + r.height - 8) continue;
-                Rectangle use{r.x + r.width - 16 - 70 - 8 - 70, y + 10, 70, 32};
-                Rectangle del{r.x + r.width - 16 - 70, y + 10, 70, 32};
+            auto rows = bpListRows();
+            const BpRow* row = bpRowAt(rows, e.pos);
+            if (!row) return true;
+            Rectangle rr = bpRowRect(*row);
+            Rectangle del{rr.x + rr.width - 8 - 70, rr.y + (rr.height - 32) / 2, 70, 32};
+            if (row->kind == BpRowKind::Book) {
+                const BlueprintBook& bk = bpBooks_[size_t(row->index)];
+                Rectangle rename{del.x - 8 - 80, del.y, 80, 32};
+                if (inRect(del, e.pos)) {
+                    int n = int(std::count_if(blueprints_.begin(), blueprints_.end(), [&](const Blueprint& b) { return b.book == bk.id; }));
+                    bpDeleteBookId_ = bk.id;
+                    bpDeleteConfirm_ = std::make_unique<ConfirmDialog>("Delete book '" + bk.name + "'?");
+                    if (n > 0)
+                        bpDeleteConfirm_->warning = "The " + std::to_string(n) + (n == 1 ? " blueprint" : " blueprints") +
+                                                    " in it will be deleted too!";
+                } else if (inRect(rename, e.pos)) {
+                    openBookDialog(bk.id);
+                } else {
+                    bpFold_.toggle(bookKey(bk.id));   // click on the headline
+                    auto after = bpListRows();
+                    float content = after.empty() ? 0 : after.back().y + after.back().h;
+                    bpListScroll_ = clampScroll(bpListScroll_, content, r.height - LIST_TOP - 8);
+                }
+                return true;
+            }
+            if (row->kind == BpRowKind::Blueprint) {
+                size_t i = size_t(row->index);
+                Rectangle use{del.x - 8 - 70, del.y, 70, 32};
                 if (inRect(use, e.pos)) { startPlacing(blueprints_[i]); return true; }
                 if (inRect(del, e.pos)) {
                     bpDeleteIndex_ = int(i);
+                    bpDeleteBookId_ = 0;
                     bpDeleteConfirm_ = std::make_unique<ConfirmDialog>("Delete '" + blueprints_[i].name + "'?");
                     return true;
                 }
+                bpDragIndex_ = int(i);   // pick it up (a drag starts once the mouse moves)
+                bpDragFrom_ = e.pos;
             }
             return true; // clicks inside the panel never reach the world
         }
@@ -407,6 +464,14 @@ void GameScreen::drawCostInfo() {
     Rectangle r = centeredRect(ui::screenW() / 2, 120, w, 32);
     fillRound(r, 10, ui::PANEL_BG);
     textCentered(line, r.x + r.width / 2, r.y + 16, 18, c, true);
+
+    // belts and splitters can be turned: say how, right under "Needs: ..."
+    if (bpMode_ == BpMode::None && (selected_ == Buildable::Belt || selected_ == Buildable::Splitter)) {
+        std::string hint = "R: rotate    Shift + R: rotate back    T: turn around";
+        Rectangle h = centeredRect(ui::screenW() / 2, 156, measure(hint, 16).x + 24, 28);
+        fillRound(h, 10, Color{ui::PANEL_BG.r, ui::PANEL_BG.g, ui::PANEL_BG.b, 210});
+        textCentered(hint, h.x + h.width / 2, h.y + 14, 16, ui::TEXT_DIM);
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -436,33 +501,213 @@ void GameScreen::drawBlueprintList() {
     Rectangle add{panelCloseRect(r).x - 10 - 90, r.y + 6, 90, 32};   // left of the X
     drawButton(add, "+ Add", ui::BTN_OK);
 
+    drawButton({r.x + 12, r.y + 6, 190, 32}, "Add blueprint book", ui::BTN, 16);
+
     float top = r.y + LIST_TOP;
     Rectangle viewport{r.x, top, r.width, r.y + r.height - 8 - top};
-    if (blueprints_.empty()) {
+    if (blueprints_.empty() && bpBooks_.empty()) {
         textCentered("No blueprints yet.", r.x + r.width / 2, top + 60, 20, BLACK);
         textCentered("Press '+ Add' or Ctrl + B and drag over your machines.", r.x + r.width / 2, top + 90, 16, ui::TEXT_DIM);
         return;
     }
-    float content = float(blueprints_.size()) * ROW_H;
+    auto rows = bpListRows();
+    float content = rows.empty() ? 0 : rows.back().y + rows.back().h;
     bpListScroll_ = clampScroll(bpListScroll_, content, viewport.height);
+    bool dragging = bpDragging() && bpDragIndex_ < int(blueprints_.size());
+    int dropBook = dragging ? bpDropBook(ui::mouse()) : -1;
     ui::beginScissor({viewport.x, viewport.y, viewport.width, viewport.height});
-    for (size_t i = 0; i < blueprints_.size(); ++i) {
-        const Blueprint& bp = blueprints_[i];
-        float y = top + float(i) * ROW_H - bpListScroll_;
-        if (y + ROW_H < viewport.y || y > viewport.y + viewport.height) continue;
-        Rectangle row{r.x + 14, y + 4, r.width - 28, ROW_H - 8};
-        fillRound(row, 8, ui::ROW_BG);
-        float textW = row.width - 2 * 78 - 20;
-        text(fitText(bp.name, textW, 20), row.x + 10, row.y + 4, 20, BLACK, true);
-        std::string info = std::to_string(bp.w) + "x" + std::to_string(bp.h) + ", " + objects(bp.count()) +
-                           " - " + costText(bp.cost());
-        text(fitText(info, textW, 14), row.x + 10, row.y + 28, 14, rgba(50, 50, 50));
-        Rectangle use{r.x + r.width - 16 - 70 - 8 - 70, y + 10, 70, 32};
-        Rectangle del{r.x + r.width - 16 - 70, y + 10, 70, 32};
-        drawButton(use, "Use", ui::BTN);
-        drawButton(del, "Delete", ui::BTN_DANGER);
+    for (const BpRow& row : rows) {
+        Rectangle rr = bpRowRect(row);
+        if (rr.y + rr.height < viewport.y || rr.y > viewport.y + viewport.height) continue;
+        Rectangle del{rr.x + rr.width - 8 - 70, rr.y + (rr.height - 32) / 2, 70, 32};
+        if (row.kind == BpRowKind::Book) {
+            const BlueprintBook& bk = bpBooks_[size_t(row.index)];
+            bool open = bpFold_.isOpen(bookKey(bk.id));
+            FoldHeaderStyle st;
+            st.bg = rgba(150, 147, 200, 170);
+            Rectangle rename{del.x - 8 - 80, del.y, 80, 32};
+            int n = int(std::count_if(blueprints_.begin(), blueprints_.end(), [&](const Blueprint& b) { return b.book == bk.id; }));
+            std::string count = "(" + std::to_string(n) + ")";
+            float room = rename.x - 10 - (rr.x + 34) - measure(" " + count, 16).x;
+            float end = drawFoldHeader(rr, fitText(bk.name, room, 20), open, st);
+            text(count, end + 8, rr.y + rr.height / 2 - 9, 16, ui::TEXT_DIM);
+            drawButton(rename, "Rename", ui::BTN, 16);
+            drawButton(del, "Delete", ui::BTN_DANGER, 16);
+            if (dropBook == bk.id) lineRound(rr, 8, 3, WHITE);   // drop it here
+        } else if (row.kind == BpRowKind::EmptyBook) {
+            text("Empty - drag blueprints onto the book to put them in", rr.x + 10, rr.y + rr.height / 2 - 8, 15, ui::TEXT_DIM);
+        } else {
+            const Blueprint& bp = blueprints_[size_t(row.index)];
+            bool held = dragging && row.index == bpDragIndex_;
+            fillRound(rr, 8, held ? Color{255, 255, 255, 50} : ui::ROW_BG);
+            float textW = del.x - 8 - 70 - 10 - (rr.x + 10);
+            Color c = held ? ui::TEXT_DIM : BLACK;
+            text(fitText(bp.name, textW, 20), rr.x + 10, rr.y + 4, 20, c, true);
+            std::string info = std::to_string(bp.w) + "x" + std::to_string(bp.h) + ", " + objects(bp.count()) +
+                               " - " + costText(bp.cost());
+            text(fitText(info, textW, 14), rr.x + 10, rr.y + 28, 14, rgba(50, 50, 50));
+            drawButton({del.x - 8 - 70, del.y, 70, 32}, "Use", ui::BTN);
+            drawButton(del, "Delete", ui::BTN_DANGER);
+        }
     }
     EndScissorMode();
     if (content > viewport.height)
         drawScrollbar({r.x + r.width - 8, viewport.y, 5, viewport.height}, bpListScroll_, content, viewport.height);
+    if (dragging) {
+        const Blueprint& bp = blueprints_[size_t(bpDragIndex_)];
+        // dropping outside the books: the whole list lights up
+        if (dropBook == 0 && bp.book != 0) lineRound(viewport, 8, 3, WHITE);
+        Vector2 m = ui::mouse();
+        std::string hint = dropBook > 0 ? "Put into this book" : dropBook == 0 ? (bp.book ? "Take out of the book" : bp.name) : bp.name;
+        Vector2 sz = measure(hint, 16, true);
+        Rectangle g{m.x + 14, m.y - 6, sz.x + 20, sz.y + 12};
+        fillRound(g, 8, Color{60, 60, 120, 230});
+        text(hint, g.x + 10, g.y + 6, 16, WHITE, true);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Blueprint books
+// ---------------------------------------------------------------------------
+void GameScreen::saveBlueprintList() { save::saveBlueprints(blueprints_, bpBooks_); }
+
+// Books first (each followed by its blueprints when it is open), then the
+// blueprints that are in no book.
+std::vector<GameScreen::BpRow> GameScreen::bpListRows() const {
+    std::vector<BpRow> rows;
+    float y = 0;
+    for (size_t b = 0; b < bpBooks_.size(); ++b) {
+        int id = bpBooks_[b].id;
+        rows.push_back({BpRowKind::Book, int(b), id, y, BOOK_H, 0});
+        y += BOOK_H;
+        if (!bpFold_.isOpen(bookKey(id))) continue;
+        bool any = false;
+        for (size_t i = 0; i < blueprints_.size(); ++i) {
+            if (blueprints_[i].book != id) continue;
+            rows.push_back({BpRowKind::Blueprint, int(i), id, y, ROW_H, BOOK_INDENT});
+            y += ROW_H;
+            any = true;
+        }
+        if (!any) {
+            rows.push_back({BpRowKind::EmptyBook, -1, id, y, EMPTY_BOOK_H, BOOK_INDENT});
+            y += EMPTY_BOOK_H;
+        }
+    }
+    for (size_t i = 0; i < blueprints_.size(); ++i) {
+        if (blueprints_[i].book != 0) continue;
+        rows.push_back({BpRowKind::Blueprint, int(i), 0, y, ROW_H, 0});
+        y += ROW_H;
+    }
+    return rows;
+}
+
+Rectangle GameScreen::bpRowRect(const BpRow& row) const {
+    Rectangle r = bpListRect();
+    float top = r.y + LIST_TOP + row.y - bpListScroll_;
+    return {r.x + 14 + row.indent, top + 4, r.width - 28 - row.indent, row.h - 8};
+}
+
+const GameScreen::BpRow* GameScreen::bpRowAt(const std::vector<BpRow>& rows, Vector2 p) const {
+    Rectangle r = bpListRect();
+    Rectangle viewport{r.x, r.y + LIST_TOP, r.width, r.height - LIST_TOP - 8};
+    if (!inRect(viewport, p)) return nullptr;
+    for (const BpRow& row : rows) {
+        Rectangle rr = bpRowRect(row);
+        // the gaps between rows belong to the row above, so a drop never misses
+        Rectangle hit{viewport.x, rr.y - 4, viewport.width, rr.height + 8};
+        if (inRect(hit, p)) return &row;
+    }
+    return nullptr;
+}
+
+int GameScreen::bpDropBook(Vector2 p) const {
+    Rectangle r = bpListRect();
+    if (!inRect({r.x, r.y + LIST_TOP, r.width, r.height - LIST_TOP - 8}, p)) return -1;
+    auto rows = bpListRows();
+    const BpRow* row = bpRowAt(rows, p);
+    return row ? row->book : 0;   // empty space: outside the books
+}
+
+bool GameScreen::bpDragging() const {
+    if (bpDragIndex_ < 0) return false;
+    Vector2 m = ui::mouse();
+    float dx = m.x - bpDragFrom_.x, dy = m.y - bpDragFrom_.y;
+    return dx * dx + dy * dy >= DRAG_MIN * DRAG_MIN;
+}
+
+Rectangle GameScreen::bpBookDialogRect() const {
+    return centeredRect(std::floor(ui::screenW() / 2), std::floor(ui::screenH() / 2) - 40, 400, 210);
+}
+
+void GameScreen::openBookDialog(int renameId) {
+    bpBookRenameId_ = renameId;
+    bpBookError_.clear();
+    std::string name;
+    if (renameId > 0) {
+        for (auto& b : bpBooks_) if (b.id == renameId) name = b.name;
+    } else {
+        int n = 1;
+        auto taken = [&](const std::string& nm) {
+            return std::any_of(bpBooks_.begin(), bpBooks_.end(), [&](const BlueprintBook& b) { return b.name == nm; });
+        };
+        while (taken("Book " + std::to_string(n))) ++n;
+        name = "Book " + std::to_string(n);
+    }
+    Rectangle r = bpBookDialogRect();
+    bpBookNameInput_ = TextInput({r.x + 30, r.y + 76, r.width - 60, 40}, name);
+    bpBookDialogOpen_ = true;
+}
+
+void GameScreen::submitBookDialog() {
+    std::string name = bpBookNameInput_ ? bpBookNameInput_->text : "";
+    size_t a = name.find_first_not_of(' ');
+    if (a == std::string::npos) { bpBookError_ = "Please enter a name"; return; }
+    name = name.substr(a, name.find_last_not_of(' ') - a + 1);
+    for (auto& b : bpBooks_)
+        if (b.name == name && b.id != bpBookRenameId_) { bpBookError_ = "A book with this name already exists"; return; }
+    if (bpBookRenameId_ > 0) {
+        for (auto& b : bpBooks_) if (b.id == bpBookRenameId_) b.name = name;
+    } else {
+        int id = 1;
+        for (auto& b : bpBooks_) id = std::max(id, b.id + 1);
+        bpBooks_.push_back({id, name});
+        bpFold_.setOpen(bookKey(id), true);   // show it's empty and how to fill it
+    }
+    saveBlueprintList();
+    bpBookDialogOpen_ = false;
+    bpBookNameInput_.reset();
+}
+
+bool GameScreen::bpBookDialogHandle(const Event& e) {
+    if (!bpBookDialogOpen_) return false;
+    Rectangle r = bpBookDialogRect();
+    Rectangle cancelBtn{r.x + 30, r.y + r.height - 58, 140, 40};
+    Rectangle okBtn{r.x + r.width - 30 - 140, r.y + r.height - 58, 140, 40};
+    auto cancel = [&]() { bpBookDialogOpen_ = false; bpBookNameInput_.reset(); };
+    if (e.type == EvType::MouseDown && (!inRect(r, e.pos) || inRect(panelCloseRect(r), e.pos))) { cancel(); return true; }
+    if (e.type == EvType::MouseDown && e.button == MB_LEFT) {
+        if (inRect(cancelBtn, e.pos)) { cancel(); return true; }
+        if (inRect(okBtn, e.pos)) { submitBookDialog(); return true; }
+    }
+    if (bpBookNameInput_) {
+        bpBookNameInput_->handle(e);
+        if (bpBookNameInput_ && bpBookNameInput_->cancelled) { cancel(); return true; }
+        if (bpBookNameInput_ && bpBookNameInput_->submitted) { bpBookNameInput_->submitted = false; submitBookDialog(); }
+    }
+    return true;   // modal
+}
+
+void GameScreen::drawBpBookDialog() {
+    if (!bpBookDialogOpen_) return;
+    Rectangle r = bpBookDialogRect();
+    drawModalShade();
+    drawPanel(r, bpBookRenameId_ > 0 ? "Rename book" : "New blueprint book");
+    text("Name:", r.x + 30, r.y + 56, 14, ui::TEXT_DIM);
+    if (bpBookNameInput_) {
+        bpBookNameInput_->update(GetFrameTime());
+        bpBookNameInput_->draw();
+    }
+    if (!bpBookError_.empty()) textCentered(bpBookError_, r.x + r.width / 2, r.y + 130, 15, rgba(170, 20, 20));
+    drawButton({r.x + 30, r.y + r.height - 58, 140, 40}, "Cancel", ui::BTN_DANGER);
+    drawButton({r.x + r.width - 30 - 140, r.y + r.height - 58, 140, 40}, bpBookRenameId_ > 0 ? "Rename" : "Create", ui::BTN_OK);
 }

@@ -3,6 +3,7 @@
 #include "raylib.h"
 #include "../core/Items.hpp"
 #include "../core/Inventory.hpp"
+#include <set>
 #include <string>
 #include <vector>
 
@@ -179,6 +180,7 @@ public:
     DialogResult handle(const Event& e);
     void draw();
     std::string message;
+    std::string warning;      // optional second line in red under the message
     bool closeButton = false;
 private:
     Rectangle box_{}, yes_{}, no_{};
@@ -193,3 +195,38 @@ public:
 private:
     Rectangle ok_{};
 };
+
+// ---------------------------------------------------------------------------
+// Expandable headlines (Controls, blueprint books - and later the crafting
+// recipes). A headline row shows an arrow (pointing right = closed, down =
+// open) and a title; a click anywhere on the row opens / closes it.
+// The caller lays out its own list: a headline, then - if isOpen(key) - its
+// contents below it.
+// ---------------------------------------------------------------------------
+class Foldout {
+public:
+    bool isOpen(const std::string& key) const { return open_.count(key) > 0; }
+    void setOpen(const std::string& key, bool open) {
+        if (open) open_.insert(key);
+        else open_.erase(key);
+    }
+    void toggle(const std::string& key) { setOpen(key, !isOpen(key)); }
+    void closeAll() { open_.clear(); }
+    // A left click inside `header` toggles `key` and returns true.
+    bool handleClick(const Event& e, Rectangle header, const std::string& key);
+private:
+    std::set<std::string> open_;   // keys of the open headlines
+};
+
+struct FoldHeaderStyle {
+    int fontSize = 20;
+    bool bold = true;
+    Color text = ui::TEXT;
+    Color bg = ui::ROW_BG;          // a = 0: no background
+    float radius = 8;
+};
+// The arrow alone: a triangle of `size` px centred on `center`.
+void drawFoldArrow(Vector2 center, float size, bool open, Color c);
+// Row background (brighter under the mouse) + arrow + title. Returns the x
+// where the title ends, for extra info drawn after it.
+float drawFoldHeader(Rectangle row, const std::string& title, bool open, const FoldHeaderStyle& style = {});

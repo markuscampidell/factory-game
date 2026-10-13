@@ -364,7 +364,10 @@ void ConfirmDialog::draw() {
     box_ = centeredRect(w / 2, h / 2, 400, 140);
     drawModalShade();
     drawPanel(box_, "", closeButton);
-    textCentered(fitText(message, box_.width - (closeButton ? 90 : 32), 20), box_.x + box_.width / 2, box_.y + 45, 20, ui::TEXT, true);
+    float my = warning.empty() ? 45 : 34;
+    textCentered(fitText(message, box_.width - (closeButton ? 90 : 32), 20), box_.x + box_.width / 2, box_.y + my, 20, ui::TEXT, true);
+    if (!warning.empty())
+        textCentered(fitText(warning, box_.width - 32, 16), box_.x + box_.width / 2, box_.y + 60, 16, rgba(170, 20, 20), true);
     yes_ = {box_.x + box_.width / 2 - 110, box_.y + box_.height - 56, 100, 36};
     no_ = {box_.x + box_.width / 2 + 10, box_.y + box_.height - 56, 100, 36};
     drawButton(yes_, "Yes", ui::BTN_OK);
@@ -385,4 +388,32 @@ void MessageDialog::draw() {
     textCentered(fitText(message, box.width - 32, 20), box.x + box.width / 2, box.y + 45, 20, ui::TEXT, true);
     ok_ = centeredRect(box.x + box.width / 2, box.y + box.height - 38, 100, 36);
     drawButton(ok_, "OK", ui::BTN);
+}
+
+// ---------------------------------------------------------------------------
+// Expandable headlines
+// ---------------------------------------------------------------------------
+bool Foldout::handleClick(const Event& e, Rectangle header, const std::string& key) {
+    if (e.type != EvType::MouseDown || e.button != MB_LEFT || !inRect(header, e.pos)) return false;
+    toggle(key);
+    return true;
+}
+
+void drawFoldArrow(Vector2 c, float size, bool open, Color col) {
+    float h = size / 2;
+    if (open)   // pointing down (vertices in the order raylib wants)
+        DrawTriangle({c.x - h, c.y - h * 0.6f}, {c.x, c.y + h * 0.6f}, {c.x + h, c.y - h * 0.6f}, col);
+    else        // pointing right
+        DrawTriangle({c.x - h * 0.6f, c.y - h}, {c.x - h * 0.6f, c.y + h}, {c.x + h * 0.6f, c.y}, col);
+}
+
+float drawFoldHeader(Rectangle row, const std::string& title, bool open, const FoldHeaderStyle& st) {
+    if (st.bg.a > 0) fillRound(row, st.radius, hovered(row) ? brighten(st.bg, 40) : st.bg);
+    else if (hovered(row)) fillRound(row, st.radius, Color{255, 255, 255, 60});
+    float arrow = std::max(10.0f, float(st.fontSize) * 0.6f);
+    drawFoldArrow({row.x + 8 + arrow / 2, row.y + row.height / 2}, arrow, open, st.text);
+    float tx = row.x + 8 + arrow + 10;
+    Vector2 m = measure(title, st.fontSize, st.bold);
+    text(title, tx, row.y + (row.height - m.y) / 2, st.fontSize, st.text, st.bold);
+    return tx + m.x;
 }

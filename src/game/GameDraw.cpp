@@ -72,6 +72,8 @@ void GameScreen::draw() {
     ui::begin();   // ---- everything below is UI (scaled down in small windows) ----
     drawFloatTexts(dt);
 
+    drawMinimap();
+    drawEdgeButtons();     // under the panels
     drawMachinePanel();
     drawInventory();
     drawCraftPanel();
@@ -164,6 +166,26 @@ static Color machineMapColor(MachineType t) {
     }
 }
 
+const Texture2D* GameScreen::mapTerrainTexture(int cx, int cy) {
+    if (!world_.isExplored(cx, cy)) return nullptr;
+    Vec2i key{cx, cy};
+    auto it = mapTerrain_.find(key);
+    if (it == mapTerrain_.end()) {
+        Image img = GenImageColor(CHUNK_SIZE, CHUNK_SIZE, GROUND);
+        for (int y = 0; y < CHUNK_SIZE; ++y)
+            for (int x = 0; x < CHUNK_SIZE; ++x) {
+                uint8_t tt = world_.tileType({cx * CHUNK_SIZE + x, cy * CHUNK_SIZE + y});
+                if (tt) ImageDrawPixel(&img, x, y, oreMapColor(tt));
+            }
+        Texture2D tex = LoadTextureFromImage(img);
+        UnloadImage(img);
+        // clamp so the edge pixels never sample the opposite edge
+        SetTextureWrap(tex, TEXTURE_WRAP_CLAMP);
+        it = mapTerrain_.emplace(key, tex).first;
+    }
+    return &it->second;
+}
+
 void GameScreen::drawMapView() {
     int l, t, r, b;
     cam_.visibleTiles(l, t, r, b);
@@ -175,30 +197,15 @@ void GameScreen::drawMapView() {
     // hasn't walked to yet stay black (and are NOT generated here)
     for (int cy = cy0; cy <= cy1; ++cy)
         for (int cx = cx0; cx <= cx1; ++cx) {
-            Vec2i key{cx, cy};
             if (!world_.isExplored(cx, cy)) {
                 float pad = 1.0f / cam_.zoom;
                 DrawRectangleRec({cx * chunkPx, cy * chunkPx, chunkPx + pad, chunkPx + pad}, BLACK);
                 continue;
             }
-            auto it = mapTerrain_.find(key);
-            if (it == mapTerrain_.end()) {
-                Image img = GenImageColor(CHUNK_SIZE, CHUNK_SIZE, GROUND);
-                for (int y = 0; y < CHUNK_SIZE; ++y)
-                    for (int x = 0; x < CHUNK_SIZE; ++x) {
-                        uint8_t tt = world_.tileType({cx * CHUNK_SIZE + x, cy * CHUNK_SIZE + y});
-                        if (tt) ImageDrawPixel(&img, x, y, oreMapColor(tt));
-                    }
-                Texture2D tex = LoadTextureFromImage(img);
-                UnloadImage(img);
-                // clamp so the edge pixels never sample the opposite edge
-                SetTextureWrap(tex, TEXTURE_WRAP_CLAMP);
-                it = mapTerrain_.emplace(key, tex).first;
-            }
             // overlap neighbours by one screen pixel so no gap can appear
             // between chunks at fractional zoom levels
             float pad = 1.0f / cam_.zoom;
-            drawTexture(it->second, {cx * chunkPx, cy * chunkPx, chunkPx + pad, chunkPx + pad});
+            drawTexture(*mapTerrainTexture(cx, cy), {cx * chunkPx, cy * chunkPx, chunkPx + pad, chunkPx + pad});
         }
 
     // belts and machines: walk only chunks that contain something
@@ -226,6 +233,67 @@ void GameScreen::drawMapView() {
     float s = std::max(player_.rect.w, 8.0f / cam_.zoom);
     DrawRectangleRec({player_.rect.cx() - s / 2, player_.rect.cy() - s / 2, s, s}, hex("#5F2D5D"));
     DrawRectangleLinesEx({player_.rect.cx() - s / 2, player_.rect.cy() - s / 2, s, s}, 1.5f / cam_.zoom, WHITE);
+}
+
+// ---------------------------------------------------------------------------
+// Minimap (bottom left): the area around the player like the map view,
+// MINIMAP_TILES tiles across.
+// Hidden in map view; a click on it opens the map view (see menuBarHandle).
+// ---------------------------------------------------------------------------
+namespace {
+constexpr float MINIMAP_SIZE = 170;
+constexpr int MINIMAP_TILES = 256;   // 8 x 8 chunks
+}
+
+Rectangle GameScreen::minimapRect() const { return {10, ui::screenH() - 10 - MINIMAP_SIZE, MINIMAP_SIZE, MINIMAP_SIZE}; }
+
+void GameScreen::drawMinimap() {
+    if (!minimapVisible()) return;
+    Rectangle r = minimapRect();
+    const float k = MINIMAP_SIZE / float(MINIMAP_TILES * CELL_SIZE);   // minimap px per world px
+    const float pcx = player_.rect.cx(), pcy = player_.rect.cy();
+    auto mx = [&](float wx) { return r.x + r.width / 2 + (wx - pcx) * k; };
+    auto my = [&](float wy) { return r.y + r.height / 2 + (wy - pcy) * k; };
+    const float half = float(MINIMAP_TILES * CELL_SIZE) / 2;
+    const int chunkWorld = CHUNK_SIZE * CELL_SIZE;
+    int cx0 = floorDiv(int(std::floor(pcx - half)), chunkWorld), cx1 = floorDiv(int(std::floor(pcx + half)), chunkWorld);
+    int cy0 = floorDiv(int(std::floor(pcy - half)), chunkWorld), cy1 = floorDiv(int(std::floor(pcy + half)), chunkWorld);
+    const float chunkPx = float(chunkWorld) * k;
+
+    fillRound({r.x - 4, r.y - 4, r.width + 8, r.height + 8}, 8, rgba(20, 20, 20));
+    ui::beginScissor(r);
+    DrawRectangleRec(r, BLACK);   // undiscovered
+    for (int cy = cy0; cy <= cy1; ++cy)
+        for (int cx = cx0; cx <= cx1; ++cx)
+            if (const Texture2D* tex = mapTerrainTexture(cx, cy))
+                drawTexture(*tex, {mx(float(cx * chunkWorld)), my(float(cy * chunkWorld)), chunkPx + 0.5f, chunkPx + 0.5f});
+
+    const Color beltColor{150, 150, 150, 255};
+    const float tilePx = float(CELL_SIZE) * k;
+    std::unordered_set<int> seen;
+    for (int cy = cy0; cy <= cy1; ++cy)
+        for (int cx = cx0; cx <= cx1; ++cx) {
+            const Chunk* ch = world_.chunk(cx, cy, false);
+            if (!ch || ch->occupants == 0) continue;
+            for (int i = 0; i < CHUNK_SIZE * CHUNK_SIZE; ++i) {
+                TileRef ref = ch->refs[size_t(i)];
+                if (ref > 0) {
+                    float x = float((cx * CHUNK_SIZE + i % CHUNK_SIZE) * CELL_SIZE);
+                    float y = float((cy * CHUNK_SIZE + i / CHUNK_SIZE) * CELL_SIZE);
+                    DrawRectangleRec({mx(x), my(y), tilePx, tilePx}, beltColor);
+                } else if (ref < 0 && seen.insert(-ref - 1).second) {
+                    const Machine& m = world_.machine(-ref - 1);
+                    DrawRectangleRec({mx(float(m.pos.x * CELL_SIZE)), my(float(m.pos.y * CELL_SIZE)), m.w * tilePx, m.h * tilePx},
+                                     machineMapColor(m.type));
+                }
+            }
+        }
+
+    // the player, always in the middle
+    DrawRectangleRec(centeredRect(r.x + r.width / 2, r.y + r.height / 2, 6, 6), hex("#5F2D5D"));
+    DrawRectangleLinesEx(centeredRect(r.x + r.width / 2, r.y + r.height / 2, 6, 6), 1, WHITE);
+    EndScissorMode();
+    if (hovered(r)) DrawRectangleLinesEx(r, 2, Color{255, 255, 255, 200});
 }
 
 void GameScreen::drawBelts() {
@@ -304,6 +372,7 @@ void GameScreen::drawMachines() {
                     xx += s + spacing;
                 }
             } else if (m.isStorage()) {
+                if (!showOutputs_) continue;   // Alt mode off: no chest icons either
                 ItemAmounts c = m.storage.contents();
                 if (!c.empty()) {
                     auto best = std::max_element(c.begin(), c.end(), [](auto& a, auto& bb) { return a.second < bb.second; });

@@ -516,16 +516,29 @@ void newGame(World& w, Player& p, CameraState& cam, const std::string& name) {
 // ---------------------------------------------------------------------------
 static fs::path blueprintsPath() { return dirPath() / "blueprints.bpjson"; }
 
-std::vector<Blueprint> loadBlueprints() {
+std::vector<Blueprint> loadBlueprints(std::vector<BlueprintBook>* booksOut) {
     std::vector<Blueprint> out;
+    std::vector<BlueprintBook> books;
     std::ifstream f(blueprintsPath());
     if (!f) return out;
     try {
         json data;
         f >> data;
+        for (const json& jk : data.value("books", json::array())) {
+            BlueprintBook bk;
+            bk.id = jk.value("id", 0);
+            bk.name = jk.value("name", std::string("Book"));
+            bool dup = false;
+            for (auto& o : books) dup |= o.id == bk.id;
+            if (bk.id > 0 && !dup) books.push_back(bk);
+        }
         for (const json& jb : data.value("blueprints", json::array())) {
             Blueprint bp;
             bp.name = jb.value("name", std::string("Blueprint"));
+            bp.book = jb.value("book", 0);
+            bool found = false;
+            for (auto& bk : books) found |= bk.id == bp.book;
+            if (!found) bp.book = 0;   // its book is gone: outside
             bp.w = jb.value("w", 0);
             bp.h = jb.value("h", 0);
             for (const json& b : jb.value("belts", json::array())) {
@@ -552,14 +565,18 @@ std::vector<Blueprint> loadBlueprints() {
     } catch (const std::exception&) {
         // a broken blueprint file just means no blueprints
     }
+    if (booksOut) *booksOut = books;
     return out;
 }
 
-bool saveBlueprints(const std::vector<Blueprint>& list) {
+bool saveBlueprints(const std::vector<Blueprint>& list, const std::vector<BlueprintBook>& books) {
+    json bookArr = json::array();
+    for (const BlueprintBook& bk : books) bookArr.push_back({{"id", bk.id}, {"name", bk.name}});
     json arr = json::array();
     for (const Blueprint& bp : list) {
         json jb;
         jb["name"] = bp.name;
+        if (bp.book > 0) jb["book"] = bp.book;
         jb["w"] = bp.w;
         jb["h"] = bp.h;
         json belts = json::array();
@@ -581,7 +598,7 @@ bool saveBlueprints(const std::vector<Blueprint>& list) {
     {
         std::ofstream f(tmp, std::ios::trunc);
         if (!f) return false;
-        f << json{{"version", 1}, {"blueprints", arr}}.dump(2);
+        f << json{{"version", 2}, {"books", bookArr}, {"blueprints", arr}}.dump(2);
     }
     std::error_code ec;
     fs::rename(tmp, path, ec);

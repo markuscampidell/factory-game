@@ -286,7 +286,8 @@ struct Transport {
         return changed;
     }
 
-    // Splitter S tries to hand its item to output side i.
+    // Splitter S tries to hand its item to output side i. reservedOnly:
+    // only belts/splitters that reserved this splitter, and machines.
     bool splitterDeliver(int sid, Machine& S, int side, bool reservedOnly) {
         Dir sd = S.sideDir(side);
         ItemId item = S.item;
@@ -310,7 +311,10 @@ struct Transport {
                 M.reservedFor = -1;
                 return true;
             }
-            if (reservedOnly) return false;
+            // A machine never reserves, but it is always "waiting" for the
+            // splitter like a reserved belt, so it takes part in the first
+            // round-robin pass. (Before, an empty belt on another side won
+            // every time and the machine got nothing.)
             return insertIntoMachine(M, item, S.pos, sd);
         }
         return false;

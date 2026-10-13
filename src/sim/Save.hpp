@@ -36,7 +36,9 @@ bool loadGame(World& w, Player& p, CameraState& cam, const std::string& name, st
 void newGame(World& w, Player& p, CameraState& cam, const std::string& name);
 
 // Blueprints are shared by all save games (saves/blueprints.bpjson).
-std::vector<Blueprint> loadBlueprints();
-bool saveBlueprints(const std::vector<Blueprint>& list);
+// Blueprint books are stored in the same file (`books` may be null when
+// they aren't needed). A blueprint whose book doesn't exist is put outside.
+std::vector<Blueprint> loadBlueprints(std::vector<BlueprintBook>* books = nullptr);
+bool saveBlueprints(const std::vector<Blueprint>& list, const std::vector<BlueprintBook>& books = {});
 
 } // namespace save

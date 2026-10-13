@@ -59,7 +59,7 @@ void View::zoomAt(float factor, Vector2 anchor) {
 GameScreen::GameScreen() {
     cam_.w = float(GetScreenWidth());
     cam_.h = float(GetScreenHeight());
-    blueprints_ = save::loadBlueprints();
+    blueprints_ = save::loadBlueprints(&bpBooks_);
     builder_.requireExplored = true;   // no building in chunks you haven't seen yet
 }
 
@@ -84,10 +84,13 @@ void GameScreen::toggleMap() {
 }
 
 // `anchor` is in UI coordinates (mouse / event position)
+// (mouse wheel, + / -). Zooming out stops at the normal view's limit - the
+// map view is only entered with M or the Map button.
 void GameScreen::zoomBy(float factor, Vector2 anchor) {
-    // remember the zoom before heading into the map view (M goes back to it)
-    if (targetZoom_ >= MAP_ZOOM && targetZoom_ * factor < MAP_ZOOM) lastNormalZoom_ = targetZoom_;
-    setZoomTarget(targetZoom_ * factor, anchor);
+    float target = targetZoom_ * factor;
+    if (targetZoom_ >= MAP_ZOOM) target = std::max(target, MAP_ZOOM);
+    if (target == targetZoom_) return;
+    setZoomTarget(target, anchor);
 }
 
 void GameScreen::setZoomTarget(float target, Vector2 anchor) {
@@ -180,7 +183,7 @@ void GameScreen::update(float dt) {
     fps_ = float(GetFPS());
     if (toastTime_ > 0) toastTime_ -= dt;
 
-    if (!menuOpen_) {
+    if (!menuOpen_ && !controlsOpen_) {   // the game pauses behind these
         const double step = 1.0 / TICKS_PER_SECOND;
         accumulator_ += std::min(double(dt), 0.25);
         int steps = 0;
@@ -225,7 +228,7 @@ void GameScreen::updateHandMining() {
     if (fullMessageCooldown_ > 0) --fullMessageCooldown_;
     Vector2 m = ui::mouse();
     bool holding = IsMouseButtonDown(MOUSE_BUTTON_RIGHT) && !shiftDown() && !mapMode() &&
-                   mode_ == BuildMode::None && !mouseOverOpenPanel(m);
+                   mode_ == BuildMode::None && !mouseOverOpenPanel(m) && !overHudButtons(m);
     Vec2i tile = screenToTile(m);
     ItemId ore = holding && world_.refAt(tile) == 0 ? world_.oreAt(tile) : NO_ITEM;
     if (ore == NO_ITEM) {
@@ -453,27 +456,8 @@ void GameScreen::handleKeys(const Event& e) {
         else toggleDelete();
         return;
     }
-    if (e.key == KEY_F) {
-        if (!craftOpen_) {
-            resetBuildState();
-            makeRoomFor(Panel::Craft);
-            craftOpen_ = true;
-            invOpen_ = true;
-        } else {
-            closePanel(Panel::Craft);   // together with the inventory
-        }
-        return;
-    }
-    if (e.key == KEY_TAB) {
-        if (invOpen_) {
-            closePanel(Panel::Inventory);
-        } else {
-            resetBuildState();
-            makeRoomFor(Panel::Inventory);
-            invOpen_ = true;
-        }
-        return;
-    }
+    if (e.key == KEY_F) { toggleCrafting(); return; }
+    if (e.key == KEY_TAB) { toggleInventory(); return; }
     if (craftOpen_) {
         if (e.key == KEY_SPACE) {
             player_.craftMode = player_.craftMode == CraftMode::Auto ? CraftMode::None : CraftMode::Auto;
@@ -504,6 +488,29 @@ void GameScreen::handleMouse(const Event& e) {
     if (e.type != EvType::MouseDown) return;
     if (e.button == MB_RIGHT) { cancelBuildOrDelete(); return; }
     if (e.button == MB_LEFT && craftOpen_) craftHandleClick(e);
+}
+
+// TAB / the Inventory button on the left edge
+void GameScreen::toggleInventory() {
+    if (invOpen_) {
+        closePanel(Panel::Inventory);   // together with its partner
+    } else {
+        resetBuildState();
+        makeRoomFor(Panel::Inventory);
+        invOpen_ = true;
+    }
+}
+
+// F / the Handcrafting button on the right edge
+void GameScreen::toggleCrafting() {
+    if (!craftOpen_) {
+        resetBuildState();
+        makeRoomFor(Panel::Craft);
+        craftOpen_ = true;
+        invOpen_ = true;
+    } else {
+        closePanel(Panel::Craft);   // together with the inventory
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -791,6 +798,9 @@ void GameScreen::closeAllPanels() {
     picker_.reset();
     bpListOpen_ = false;
     bpDeleteConfirm_.reset();
+    bpDragIndex_ = -1;
+    bpBookDialogOpen_ = false;
+    bpBookNameInput_.reset();
 }
 
 // ESC closes one thing at a time, topmost first. A machine / storage panel
@@ -880,7 +890,9 @@ std::string GameScreen::hotbarTooltip(Vector2 p) const {
         bool belt = s.b == Buildable::Belt;
         std::string name = belt ? "Belt" : machineSpec(toMachine(s.b)).name;
         const ItemAmounts& cost = belt ? beltBuildCost() : machineSpec(toMachine(s.b)).cost;
-        return name + " (" + key + ") - " + costText(cost);
+        std::string tip = name + " (" + key + ") - " + costText(cost);
+        if (belt || s.b == Buildable::Splitter) tip += " - R / T to rotate";
+        return tip;
     }
     return "";
 }

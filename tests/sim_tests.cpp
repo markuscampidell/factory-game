@@ -131,6 +131,27 @@ static void testSplitter() {
     std::printf("  splitter (one side blocked): %d + %d = %d items/min\n", f, d, f + d);
 }
 
+// A splitter with a belt on one side and a machine on another must feed
+// both (the belt used to win every time and the machine got nothing).
+static void testSplitterIntoMachine() {
+    World w;
+    w.seed = 1;
+    makeSourceStorage(w, {-2, 0}, IRON_ORE, 600);
+    line(w, {0, 0}, Dir::Right, 5);
+    w.addMachine(makeMachine(MachineType::Splitter, {5, 0}, Dir::Right));
+    line(w, {6, 0}, Dir::Right, 6);
+    int sink = makeSinkStorage(w, {12, 0});
+    int chestSide = makeSinkStorage(w, {5, -2});                          // left side (up), touching
+    int smelter = w.addMachine(makeMachine(MachineType::Smelter, {4, 1}));   // right side (down)
+    for (int t = 0; t < 600; ++t) w.tick();
+    int toSmelter = 0;
+    for (auto& c : w.machine(smelter).contents()) toSmelter += c.second;
+    int toChest = w.machine(chestSide).storage.amount(IRON_ORE);
+    int toBelt = w.machine(sink).storage.amount(IRON_ORE);
+    CHECK(toSmelter > 0 && toChest > 0 && toBelt > 0, "splitter outputs: belt %d, chest %d, smelter %d", toBelt, toChest, toSmelter);
+    std::printf("  splitter into machines: belt %d, chest %d, smelter %d\n", toBelt, toChest, toSmelter);
+}
+
 // ---------------------------------------------------------------------------
 static void testFullLoopRotates() {
     World w;
@@ -403,6 +424,15 @@ static void testBlueprints() {
     auto loaded = save::loadBlueprints();
     CHECK(loaded.size() == 1 && loaded[0].name == "Test BP" && loaded[0].belts.size() == 5 && loaded[0].machines.size() == 2 &&
           loaded[0].cost() == bp.cost(), "blueprint file round trip");
+    // books: kept with their blueprints; a blueprint whose book is missing goes outside
+    Blueprint inBook = bp, orphan = bp;
+    inBook.name = "In book"; inBook.book = 7;
+    orphan.name = "Orphan"; orphan.book = 9;
+    CHECK(save::saveBlueprints({bp, inBook, orphan}, {{7, "My book"}}), "save blueprints with a book");
+    std::vector<BlueprintBook> books;
+    loaded = save::loadBlueprints(&books);
+    CHECK(books.size() == 1 && books[0].id == 7 && books[0].name == "My book" && loaded.size() == 3 && loaded[0].book == 0 &&
+          loaded[1].book == 7 && loaded[2].book == 0, "blueprint books round trip");
     std::printf("  blueprint: %zu belts + %zu machines copied, cost paid exactly, blocked/no-funds placements change nothing\n",
                 bp.belts.size(), bp.machines.size());
 }
@@ -569,6 +599,7 @@ int main(int argc, char** argv) {
     testStraightBeltThroughput(5000);
     testMerge();
     testSplitter();
+    testSplitterIntoMachine();
     testFullLoopRotates();
     std::printf("Machines\n");
     testProductionChain();

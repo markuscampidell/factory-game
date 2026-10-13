@@ -230,7 +230,33 @@ private:
     bool bpListOpen_ = false;
     float bpListScroll_ = 0;
     int bpDeleteIndex_ = -1;
+    int bpDeleteBookId_ = 0;           // > 0: the confirmation is for a book
     std::unique_ptr<ConfirmDialog> bpDeleteConfirm_;
+    // Blueprint books: named groups in the list, opened / closed like the
+    // Controls headlines. Blueprints are dragged onto a book (or out of it).
+    std::vector<BlueprintBook> bpBooks_;
+    Foldout bpFold_;                   // open books ("book:<id>")
+    static std::string bookKey(int id) { return "book:" + std::to_string(id); }
+    enum class BpRowKind { Book, Blueprint, EmptyBook };
+    struct BpRow { BpRowKind kind; int index; int book; float y, h, indent; };  // y: from the list top
+    std::vector<BpRow> bpListRows() const;
+    Rectangle bpRowRect(const BpRow& row) const;          // on screen (with scroll)
+    const BpRow* bpRowAt(const std::vector<BpRow>& rows, Vector2 p) const;
+    int bpDropBook(Vector2 p) const;   // book id under p (0 = outside books), -1 = not over the list
+    int bpDragIndex_ = -1;             // blueprint being dragged
+    Vector2 bpDragFrom_{};
+    bool bpDragging() const;           // dragged far enough to count as a drag
+    void saveBlueprintList();
+    // "New blueprint book" / "Rename book" dialog
+    bool bpBookDialogOpen_ = false;
+    int bpBookRenameId_ = 0;           // 0 = new book
+    std::optional<TextInput> bpBookNameInput_;
+    std::string bpBookError_;
+    Rectangle bpBookDialogRect() const;
+    void openBookDialog(int renameId);
+    void submitBookDialog();
+    bool bpBookDialogHandle(const Event& e);
+    void drawBpBookDialog();
     // "Save blueprint" dialog shown after a Ctrl+B selection
     bool bpSaveOpen_ = false;
     Blueprint bpPending_;
@@ -272,12 +298,31 @@ private:
     std::string pendingSaveAs_;
     bool controlsOpen_ = false;
     float controlsScroll_ = 0;
+    Foldout controlsFold_;           // which Controls headlines are open
     bool returnToMenu_ = false;
     // HUD buttons: [Menu] top right; [Alt] [Blueprints] bottom right
     bool showOutputs_ = true;      // Alt button / Alt key: recipe output icons on machines
     bool altClean_ = false;        // Alt is held and nothing else was pressed (Alt+Tab etc.)
     Rectangle blueprintButtonRect() const;
     Rectangle altButtonRect() const;
+    // [Controls] next to [Menu]; [Copy] [Paste] [Delete area] above the
+    // bottom right buttons; [Inventory] on the left edge, [Handcrafting] on
+    // the right edge; the minimap in the bottom left corner
+    Rectangle controlsButtonRect() const;
+    Rectangle copyButtonRect() const;
+    Rectangle pasteButtonRect() const;
+    Rectangle cutButtonRect() const;
+    Rectangle inventoryButtonRect() const;
+    Rectangle craftButtonRect() const;
+    Rectangle minimapRect() const;
+    bool minimapVisible() const { return !mapMode(); }
+    void toggleInventory();          // TAB / Inventory button
+    void toggleCrafting();           // F / Handcrafting button
+    void drawEdgeButtons();          // Inventory / Handcrafting (under the panels)
+    void drawMinimap();
+    // 1 pixel per tile terrain texture of an explored chunk (map view and
+    // minimap); nullptr if the chunk hasn't been discovered
+    const Texture2D* mapTerrainTexture(int cx, int cy);
     bool overHudButtons(Vector2 p) const;
     std::string hudButtonTooltip(Vector2 p) const;   // "" if not over a button
     void drawHudTooltips();

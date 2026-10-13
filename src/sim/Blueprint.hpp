@@ -24,6 +24,7 @@ struct BlueprintMachine {
 
 struct Blueprint {
     std::string name;
+    int book = 0;            // id of the blueprint book it is in (0 = none)
     int w = 0, h = 0;        // size in tiles
     std::vector<BlueprintBelt> belts;
     std::vector<BlueprintMachine> machines;
@@ -32,6 +33,12 @@ struct Blueprint {
     int count() const { return int(belts.size() + machines.size()); }
     ItemAmounts cost() const;        // everything needed to build it
     void computeMasks();             // fills BlueprintBelt::mask
+};
+
+// A named group in the blueprint list. Books can't contain books.
+struct BlueprintBook {
+    int id = 0;              // > 0, unique; Blueprint::book refers to it
+    std::string name;
 };
 
 // ---------------------------------------------------------------------------
