@@ -104,12 +104,17 @@ void GameScreen::zoomBy(float factor, Vector2 anchor) {
     if (dir != 0 && atEdge) {
         bool newRun = !zoomGateActive() || zoomGateDir_ != dir;
         if (newRun && spinning) {
-            // still spinning from zooming up to the edge: swallow it
-            zoomGate_ = 0;
-            zoomGateDir_ = dir;
-            zoomSpinHintUntil_ = now + 1.2;
-            return;
+            // still spinning from zooming up to the edge: stay at the edge
+            // for ZOOM_EDGE_HOLD, then let the notches count
+            if (zoomEdgeSince_ < 0) zoomEdgeSince_ = now;
+            if (now - zoomEdgeSince_ < ZOOM_EDGE_HOLD) {
+                zoomGate_ = 0;
+                zoomGateDir_ = dir;
+                zoomSpinHintUntil_ = now + 1.2;
+                return;
+            }
         }
+        zoomEdgeSince_ = -1;
         if (newRun) zoomGate_ = 0;
         zoomGateDir_ = dir;
         zoomGateLast_ = now;
@@ -122,6 +127,7 @@ void GameScreen::zoomBy(float factor, Vector2 anchor) {
     }
     zoomGate_ = 0;   // zoomed normally / the other way: the run is over
     zoomSpinHintUntil_ = 0;
+    zoomEdgeSince_ = -1;
     if (!atEdge) setZoomTarget(target, anchor);
 }
 

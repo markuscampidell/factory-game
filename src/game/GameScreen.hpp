@@ -116,14 +116,17 @@ private:
     // of the map view). ZOOM_GATE_STEPS more notches in the same direction,
     // each within ZOOM_GATE_TIME of the last, switch views. A bar in the
     // middle of the screen shows the progress.
-    // Spin protection: while the wheel is still spinning when it hits the
-    // edge (notches less than ZOOM_SPIN_PAUSE apart), the extra notches are
-    // swallowed. Counting only starts after the wheel has been still for
-    // ZOOM_SPIN_PAUSE - so zooming out hard just stops at the edge.
+    // Edge hold: if the wheel is still spinning when the zoom reaches the
+    // edge (notches less than ZOOM_SPIN_PAUSE apart), the zoom stays at the
+    // edge for ZOOM_EDGE_HOLD seconds (those notches do nothing); after that
+    // the notches count towards the gate even while spinning. Notches after
+    // a pause count straight away.
     static constexpr int ZOOM_GATE_STEPS = 10;
     static constexpr double ZOOM_GATE_TIME = 1.0;
     static constexpr double ZOOM_SPIN_PAUSE = 0.35;
+    static constexpr double ZOOM_EDGE_HOLD = 0.5;
     double zoomLastNotch_ = -10;    // GetTime() of the last zoom notch of any kind
+    double zoomEdgeSince_ = -1;     // when a spin reached the edge (-1: not holding)
     double zoomSpinHintUntil_ = 0;  // show "stop, then ..." until then
     int zoomGate_ = 0;              // notches so far
     int zoomGateDir_ = 0;           // +1 towards the map, -1 back to normal
