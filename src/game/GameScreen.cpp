@@ -93,15 +93,27 @@ namespace { constexpr float MAP_TOP = MAP_ZOOM / 1.15f; }   // closest map zoom
 bool GameScreen::zoomGateActive() const { return zoomGate_ > 0 && GetTime() - zoomGateLast_ <= ZOOM_GATE_TIME; }
 
 void GameScreen::zoomBy(float factor, Vector2 anchor) {
+    double now = GetTime();
+    bool spinning = now - zoomLastNotch_ < ZOOM_SPIN_PAUSE;   // came right after the previous notch
+    zoomLastNotch_ = now;
     bool inMap = targetZoom_ < MAP_ZOOM;
     int dir = inMap ? (factor > 1 ? -1 : 0) : (factor < 1 ? 1 : 0);   // pushing towards the other view?
     float lo = inMap ? MIN_ZOOM : MAP_ZOOM, hi = inMap ? MAP_TOP : MAX_ZOOM;
     float target = std::clamp(targetZoom_ * factor, lo, hi);
     bool atEdge = std::fabs(target - targetZoom_) < 1e-4f;
     if (dir != 0 && atEdge) {
-        if (!zoomGateActive() || zoomGateDir_ != dir) zoomGate_ = 0;   // a new run
+        bool newRun = !zoomGateActive() || zoomGateDir_ != dir;
+        if (newRun && spinning) {
+            // still spinning from zooming up to the edge: swallow it
+            zoomGate_ = 0;
+            zoomGateDir_ = dir;
+            zoomSpinHintUntil_ = now + 1.2;
+            return;
+        }
+        if (newRun) zoomGate_ = 0;
         zoomGateDir_ = dir;
-        zoomGateLast_ = GetTime();
+        zoomGateLast_ = now;
+        zoomSpinHintUntil_ = 0;
         if (++zoomGate_ >= ZOOM_GATE_STEPS) {
             zoomGate_ = 0;
             toggleMap();
@@ -109,6 +121,7 @@ void GameScreen::zoomBy(float factor, Vector2 anchor) {
         return;
     }
     zoomGate_ = 0;   // zoomed normally / the other way: the run is over
+    zoomSpinHintUntil_ = 0;
     if (!atEdge) setZoomTarget(target, anchor);
 }
 

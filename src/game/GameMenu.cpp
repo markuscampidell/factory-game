@@ -16,7 +16,7 @@ const std::vector<ControlSection>& controlSections() {
         {"Zoom", {{"Scroll Wheel (over the world)", "Zoom in / out around the mouse"},
                   {"+ / -", "Zoom in / out"},
                   {"Minimap", "Bottom left: shows the area around you. Click it to open the map view"},
-                  {"Map view", "M, a click on the minimap, or keep zooming out: at the furthest normal zoom, 5 more notches in a row (a bar in the middle of the screen fills up; it empties after a 1 s pause). Leaving works the same way, zooming in. Zoomed far out, everything built is drawn as plain boxes. You can't move, build single things or delete single things there, but Copy / Paste (Ctrl + C / V), Delete area (Ctrl + X) and blueprints work"}}},
+                  {"Map view", "M, a click on the minimap, or keep zooming out: zooming stops at 40%; let the wheel rest a moment, then 10 more notches in a row switch to the map (a bar in the middle of the screen fills up; it empties after a 1 s pause). Notches that arrive while the wheel is still spinning from zooming are ignored, so you can zoom out hard without landing in the map. Leaving works the same way, zooming in. Zoomed far out, everything built is drawn as plain boxes. You can't move, build single things or delete single things there, but Copy / Paste (Ctrl + C / V), Delete area (Ctrl + X) and blueprints work"}}},
         {"Menus (ESC)", {{"ESC", "Close the open panels (an open item picker first), then leave build mode, then open the Game Menu. In the Game Menu: one step back"},
                          {"TAB / Inventory", "Toggle your inventory (button on the left edge)"},
                          {"F / Handcrafting", "Toggle the hand-crafting panel (button on the right edge)"},

@@ -619,12 +619,13 @@ void GameScreen::drawHandMining() {
 
 // The zoom gate's progress: a box in the middle of the screen.
 void GameScreen::drawZoomGate() {
-    if (!zoomGateActive()) { zoomGateShown_ = 0; return; }
-    // the fill glides to the new fifth (about 90 % of the way in 0.15 s)
+    bool hint = !zoomGateActive() && GetTime() < zoomSpinHintUntil_;   // swallowed a spin
+    if (!zoomGateActive() && !hint) { zoomGateShown_ = 0; return; }
+    // the fill glides to the new step (about 90 % of the way in 0.15 s)
     float goal = float(zoomGate_) / float(ZOOM_GATE_STEPS);
     if (goal < zoomGateShown_) zoomGateShown_ = 0;   // a new run starts empty
     zoomGateShown_ += (goal - zoomGateShown_) * (1.0f - std::exp(-GetFrameTime() * 15.0f));
-    std::string label = zoomGateDir_ > 0 ? "Keep zooming out for the map view" : "Keep zooming in for the normal view";
+    std::string label = zoomGateDir_ > 0 ? "Zoom out for the map view" : "Zoom in for the normal view";
     float w = std::max(260.0f, measure(label, 18, true).x + 40);
     Rectangle box = centeredRect(ui::screenW() / 2, ui::screenH() / 2, w, 78);
     fillRound(box, 12, ui::PANEL_BG);
