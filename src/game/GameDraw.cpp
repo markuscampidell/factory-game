@@ -619,8 +619,7 @@ void GameScreen::drawHandMining() {
 
 // The zoom gate's progress: a box in the middle of the screen.
 void GameScreen::drawZoomGate() {
-    bool hint = !zoomGateActive() && GetTime() < zoomSpinHintUntil_;   // swallowed a spin
-    if (!zoomGateActive() && !hint) { zoomGateShown_ = 0; return; }
+    if (!zoomGateActive()) { zoomGateShown_ = 0; return; }
     // the fill glides to the new step (about 90 % of the way in 0.15 s)
     float goal = float(zoomGate_) / float(ZOOM_GATE_STEPS);
     if (goal < zoomGateShown_) zoomGateShown_ = 0;   // a new run starts empty

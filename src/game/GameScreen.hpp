@@ -127,7 +127,6 @@ private:
     static constexpr double ZOOM_EDGE_HOLD = 0.25;
     double zoomLastNotch_ = -10;    // GetTime() of the last zoom notch of any kind
     double zoomEdgeSince_ = -1;     // when a spin reached the edge (-1: not holding)
-    double zoomSpinHintUntil_ = 0;  // show "stop, then ..." until then
     int zoomGate_ = 0;              // notches so far
     int zoomGateDir_ = 0;           // +1 towards the map, -1 back to normal
     double zoomGateLast_ = 0;       // GetTime() of the last notch

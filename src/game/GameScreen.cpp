@@ -108,9 +108,8 @@ void GameScreen::zoomBy(float factor, Vector2 anchor) {
             // for ZOOM_EDGE_HOLD, then let the notches count
             if (zoomEdgeSince_ < 0) zoomEdgeSince_ = now;
             if (now - zoomEdgeSince_ < ZOOM_EDGE_HOLD) {
-                zoomGate_ = 0;
+                zoomGate_ = 0;   // (no box yet - it appears once counting starts)
                 zoomGateDir_ = dir;
-                zoomSpinHintUntil_ = now + 1.2;
                 return;
             }
         }
@@ -118,7 +117,6 @@ void GameScreen::zoomBy(float factor, Vector2 anchor) {
         if (newRun) zoomGate_ = 0;
         zoomGateDir_ = dir;
         zoomGateLast_ = now;
-        zoomSpinHintUntil_ = 0;
         if (++zoomGate_ >= ZOOM_GATE_STEPS) {
             zoomGate_ = 0;
             toggleMap();
@@ -126,7 +124,6 @@ void GameScreen::zoomBy(float factor, Vector2 anchor) {
         return;
     }
     zoomGate_ = 0;   // zoomed normally / the other way: the run is over
-    zoomSpinHintUntil_ = 0;
     zoomEdgeSince_ = -1;
     if (!atEdge) setZoomTarget(target, anchor);
 }
