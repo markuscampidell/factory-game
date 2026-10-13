@@ -17,13 +17,15 @@ const std::vector<ControlSection>& controlSections() {
                   {"+ / -", "Zoom in / out"},
                   {"Minimap", "Bottom left: shows the area around you. Click it to open the map view"},
                   {"P", "Place a named map marker where the mouse is (shown on the map view and the minimap). P on a marker: rename or delete it"},
+                  {"Drag (map view)", "Hold the left mouse button and move the mouse to move the map (middle button: also while copying / placing)"},
+                  {"Click a marker", "Edit it: name, symbol (any sprite of the game, with search) or delete"},
                   {"Add map marker (button)", "Above Delete area: pick up a marker, move around (also in the map view) and left click to place it. Right click / ESC: cancel"},
                   {"Map view", "M, a click on the minimap, or keep zooming out: zooming stops at 40%; 10 more notches in a row switch to the map (a bar in the middle of the screen fills up; it empties after a 1 s pause). If you zoom out fast, the zoom first stays at 40% for a quarter of a second, then the notches start counting. Leaving works the same way, zooming in. Zoomed far out, everything built is drawn as plain boxes. You can't move, build single things or delete single things there, but Copy / Paste (Ctrl + C / V), Delete area (Ctrl + X) and blueprints work"}}},
         {"Menus (ESC)", {{"ESC", "Close the open panels (an open item picker first), then leave build mode, then open the Game Menu. In the Game Menu: one step back"},
                          {"TAB / Inventory", "Toggle your inventory (button on the left edge)"},
                          {"F / Handcrafting", "Toggle the hand-crafting panel (button on the right edge)"},
                          {"Controls", "This list (button next to Menu, top right)"},
-                         {"Autosave", "Every 5 minutes of play the game is saved in the background. If you didn't save after that (a crash, Exit without saving), Load Game shows 'Load autosave' on your save"}}},
+                         {"Autosave", "Every 5 minutes of play the game is saved under its own name, just like pressing Save"}}},
         {"Building (bottom-of-screen hotbar)",
          {{"1 - 6", "Select a buildable: Smelter, Assembler, Belt, Splitter, Storage, Miner"},
           {"7", "Select Nothing - deselects, same as clicking that hotbar slot"},
@@ -181,7 +183,7 @@ void GameScreen::drawHudTooltips() {
     // a map marker: its name (in the map view the name is drawn anyway)
     if (tip.empty() && !mapMode()) {
         int mk = markerAt(m);
-        if (mk >= 0) tip = markers_[size_t(mk)].name + "  (P: rename / delete)";
+        if (mk >= 0) tip = markers_[size_t(mk)].name + "  (click to edit)";
     }
     if (!tip.empty()) drawTooltip(tip, m);
 }

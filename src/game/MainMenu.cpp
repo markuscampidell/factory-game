@@ -9,17 +9,7 @@ static const char* INVALID_NAME_MESSAGE = "Save names can only contain letters, 
 MainMenu::MainMenu() { refresh(); }
 
 void MainMenu::refresh() {
-    // autosaves hide behind their save ("Load autosave" on its row); one
-    // whose save no longer exists is listed on its own so it isn't lost
-    saves_.clear();
-    std::vector<std::string> all = save::listSaves();
-    for (const std::string& s : all) {
-        if (save::isAutosave(s)) {
-            std::string base = s.substr(0, s.size() - std::string("-autosave").size());
-            if (std::find(all.begin(), all.end(), base) != all.end()) continue;
-        }
-        saves_.push_back(s);
-    }
+    saves_ = save::listSaves();
     playTimes_.clear();
     for (const std::string& s : saves_) playTimes_.push_back(save::readPlayTime(s));
     lastOpened_ = save::lastOpened();
@@ -82,7 +72,6 @@ MenuAction MainMenu::handleRoot(const Event& e) {
     for (auto& b : rootButtons_) {
         if (!inRect(b.second, e.pos)) continue;
         if (b.first == "continue") return {MenuAction::LoadGame, lastOpened_};
-        if (b.first == "continue_auto") return {MenuAction::LoadAutosave, lastOpened_};
         if (b.first == "new_game") openNewGame();
         if (b.first == "load_game") { screen_ = Screen::LoadGame; scroll_ = 0; refresh(); }
         if (b.first == "quit") return {MenuAction::Quit, ""};
@@ -157,7 +146,6 @@ MenuAction MainMenu::handleLoadGame(const Event& e) {
             return {};
         }
         if (inRect(r.edit, e.pos)) { openRename(r.save); return {}; }
-        if (r.autosave.width > 0 && inRect(r.autosave, e.pos)) return {MenuAction::LoadAutosave, r.save};
         if (inRect(r.name, e.pos)) return {MenuAction::LoadGame, r.save};
     }
     return {};
@@ -223,8 +211,6 @@ void MainMenu::draw(float dt) {
         float top = titleY + tm.y / 2 + 60;
         std::vector<std::pair<std::string, std::string>> labels;
         if (!lastOpened_.empty()) labels.push_back({"continue", "Continue (" + lastOpened_ + ")"});
-        // the game wasn't saved after its last autosave (e.g. it crashed)
-        if (!lastOpened_.empty() && save::hasNewerAutosave(lastOpened_)) labels.push_back({"continue_auto", "Load newer autosave"});
         labels.push_back({"new_game", "New Game"});
         labels.push_back({"load_game", "Load Game"});
 #ifndef __EMSCRIPTEN__
@@ -238,7 +224,7 @@ void MainMenu::draw(float dt) {
             Rectangle r = centeredRect(w / 2, top + float(i) * 70 + 25, 260, 50);
             rootButtons_.push_back({labels[i].first, r});
             const std::string& id = labels[i].first;
-            Color c = (id == "continue" || id == "continue_auto") ? ui::BTN_OK : id == "quit" ? ui::BTN_DANGER : ui::BTN;
+            Color c = id == "continue" ? ui::BTN_OK : id == "quit" ? ui::BTN_DANGER : ui::BTN;
             drawButton(r, labels[i].second, c, 20);
         }
     } else if (screen_ == Screen::NewGame) {
@@ -276,11 +262,7 @@ void MainMenu::draw(float dt) {
                 Rectangle del{row.x + row.width - 8 - 70, row.y + 8, 70, 32};
                 Rectangle edit{del.x - 8 - 80, row.y + 8, 80, 32};
                 Rectangle load{edit.x - 8 - 70, row.y + 8, 70, 32};
-                // only while the autosave is newer than the save (it wasn't saved since)
-                Rectangle autoBtn{};
-                if (save::hasNewerAutosave(saves_[i])) autoBtn = {load.x - 8 - 120, row.y + 8, 120, 32};
-                float nameRight = autoBtn.width > 0 ? autoBtn.x : load.x;
-                std::string fitted = fitText(saves_[i], nameRight - row.x - 20, 20);
+                std::string fitted = fitText(saves_[i], load.x - row.x - 20, 20);
                 double secs = i < playTimes_.size() ? playTimes_[i] : -1;
                 if (secs >= 0) {   // name + "Played: h:mm:ss" under it
                     long t = long(secs);
@@ -292,11 +274,10 @@ void MainMenu::draw(float dt) {
                     Vector2 m = measure(fitted, 20, true);
                     text(fitted, row.x + 10, row.y + (rowH - m.y) / 2, 20, ui::TEXT, true);
                 }
-                if (autoBtn.width > 0) drawButton(autoBtn, "Load autosave", ui::BTN, 16);
                 drawButton(load, "Load", ui::BTN_OK);       // the whole row loads, too
                 drawButton(edit, "Rename", ui::BTN);
                 drawButton(del, "Delete", ui::BTN_DANGER);
-                rows_.push_back({row, edit, del, autoBtn, saves_[i]});
+                rows_.push_back({row, edit, del, saves_[i]});
             }
             EndScissorMode();
             if (contentHeight_ > viewport_.height)

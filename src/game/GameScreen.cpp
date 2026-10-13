@@ -190,10 +190,9 @@ void GameScreen::newGame(const std::string& name) {
     targetZoom_ = cam_.zoom;
 }
 
-bool GameScreen::loadGame(const std::string& name, std::string* error, bool fromAutosave) {
+bool GameScreen::loadGame(const std::string& name, std::string* error) {
     CameraState cs;
-    if (!save::loadGame(world_, player_, cs, fromAutosave ? save::autosaveName(name) : name, error)) return false;
-    if (fromAutosave) save::setLastOpened(name);   // Continue keeps meaning "name"
+    if (!save::loadGame(world_, player_, cs, name, error)) return false;
     world_.takeRecord();   // loading isn't something to undo
     undoStack_.clear();
     redoStack_.clear();
@@ -244,8 +243,8 @@ void GameScreen::update(float dt) {
         autosaveTimer_ += dt;
         if (autosaveTimer_ >= AUTOSAVE_SECONDS) {
             autosaveTimer_ = 0;
-            saveNow(autosaveName());
-            notify("Autosaved ('" + autosaveName() + "')");
+            saveNow(saveName_);
+            notify("Autosaved");
         }
         stepZoom(dt);
         perFrame();
@@ -420,7 +419,17 @@ void GameScreen::floatText(float wx, float wy, const std::string& s, Color c) {
     floatTexts_.push_back({wx, wy, s, c, 0});
 }
 
+void GameScreen::updateMapDrag() {
+    if (!mapDragging_) return;
+    if (!mapMode() || !IsMouseButtonDown(mapDragButton_)) { mapDragging_ = false; return; }
+    Vector2 now = GetMousePosition();
+    cam_.x -= (now.x - mapDragLast_.x) / cam_.zoom;   // the map follows the mouse
+    cam_.y -= (now.y - mapDragLast_.y) / cam_.zoom;
+    mapDragLast_ = now;
+}
+
 void GameScreen::perFrame() {
+    updateMapDrag();
     if (!IsMouseButtonDown(MOUSE_BUTTON_LEFT)) commitUndo();   // a whole drag = one undo step
     validatePanels();
     updatePasteHold();
@@ -472,7 +481,7 @@ void GameScreen::handle(const Event& e) {
         return;
     }
     if (e.type == EvType::MouseDown)
-        for (SearchBox* sb : {&craftSearch_, &pickerSearch_, &bpSearch_, &machineSearch_})
+        for (SearchBox* sb : {&craftSearch_, &pickerSearch_, &bpSearch_, &machineSearch_, &markerSearch_})
             if (sb->focused() && !inRect(sb->rect, e.pos)) sb->unfocus();
     // Alt toggles the machine outputs when it's released on its own
     // (so Alt+Tab or Alt+something else doesn't toggle it)
@@ -1066,13 +1075,8 @@ void GameScreen::applyUndo(std::vector<UndoRecord>& from, std::vector<UndoRecord
     }
 }
 
-std::string GameScreen::autosaveName() const {
-    if (save::isAutosave(saveName_)) return saveName_;   // an autosave whose save is gone: keep saving into it
-    return save::autosaveName(saveName_);
-}
-
 SearchBox* GameScreen::focusedSearch() {
-    for (SearchBox* sb : {&craftSearch_, &pickerSearch_, &bpSearch_, &machineSearch_})
+    for (SearchBox* sb : {&craftSearch_, &pickerSearch_, &bpSearch_, &machineSearch_, &markerSearch_})
         if (sb->focused()) return sb;
     return nullptr;
 }

@@ -98,7 +98,7 @@ void GameScreen::draw() {
 
     if (markerPlacing_) {   // the marker you hold, and how to place it
         Vector2 m = ui::mouse();
-        drawMarkerPin({m.x, m.y - 2}, 16, false, "");
+        drawMarkerPin({m.x, m.y - 2}, 18, false, "", "");
         std::string hint = "Left click: place the marker here    Right click / ESC: cancel";
         Rectangle h = centeredRect(ui::screenW() / 2, 120, measure(hint, 16).x + 24, 28);
         fillRound(h, 10, ui::PANEL_BG);
@@ -224,14 +224,12 @@ void GameScreen::drawMapView() {
     const float chunkPx = float(CHUNK_SIZE * CELL_SIZE);
 
     // terrain: one tiny cached texture per explored chunk; chunks the player
-    // hasn't walked to yet stay black (and are NOT generated here)
+    // hasn't walked to yet stay black (and are NOT generated here). One black
+    // rectangle behind everything, so zoomed far out it isn't thousands.
+    DrawRectangleRec({float(cx0) * chunkPx, float(cy0) * chunkPx, float(cx1 - cx0 + 1) * chunkPx, float(cy1 - cy0 + 1) * chunkPx}, BLACK);
     for (int cy = cy0; cy <= cy1; ++cy)
         for (int cx = cx0; cx <= cx1; ++cx) {
-            if (!world_.isExplored(cx, cy)) {
-                float pad = 1.0f / cam_.zoom;
-                DrawRectangleRec({cx * chunkPx, cy * chunkPx, chunkPx + pad, chunkPx + pad}, BLACK);
-                continue;
-            }
+            if (!world_.isExplored(cx, cy)) continue;
             // overlap neighbours by one screen pixel so no gap can appear
             // between chunks at fractional zoom levels
             float pad = 1.0f / cam_.zoom;
@@ -322,7 +320,7 @@ void GameScreen::drawMinimap() {
     // map markers
     for (const MapMarker& mk : markers_) {
         Vector2 p{mx(float(mk.tile.x * CELL_SIZE + CELL_SIZE / 2)), my(float(mk.tile.y * CELL_SIZE + CELL_SIZE / 2))};
-        if (inRect(r, p)) drawMarkerPin(p, 8, false, mk.name);
+        if (inRect(r, p)) drawMarkerPin(p, 8, false, mk.name, mk.symbol);
     }
     // the player, always in the middle
     DrawRectangleRec(centeredRect(r.x + r.width / 2, r.y + r.height / 2, 6, 6), hex("#5F2D5D"));
@@ -739,7 +737,40 @@ Vector2 GameScreen::worldToUi(float wx, float wy) const {
     return {(wx - cam_.x) * cam_.zoom / ui::scale(), (wy - cam_.y) * cam_.zoom / ui::scale()};
 }
 
-void GameScreen::drawMarkerPin(Vector2 at, float size, bool label, const std::string& name) {
+// ---- marker symbols: every sprite of the game ----
+const std::vector<MarkerSymbol>& markerSymbols() {
+    static std::vector<MarkerSymbol> list;
+    if (list.empty()) {
+        for (int i = 1; i <= itemCount(); ++i) list.push_back({"item:" + itemDef(ItemId(i)).id, itemDef(ItemId(i)).name});
+        for (int t = 0; t < int(MachineType::Count); ++t)
+            list.push_back({std::string("machine:") + machineSpec(MachineType(t)).saveType, machineSpec(MachineType(t)).name});
+        list.push_back({"belt", "Belt"});
+    }
+    return list;
+}
+
+std::string markerSymbolName(const std::string& id) {
+    for (auto& s : markerSymbols()) if (s.id == id) return s.name;
+    return "";
+}
+
+void drawMarkerSymbol(const std::string& id, Rectangle d) {
+    if (id.empty()) return;
+    auto fit = [&](const Texture2D& t) {   // keep the sprite's shape, centred
+        float sc = std::min(d.width / float(t.width), d.height / float(t.height));
+        float w = float(t.width) * sc, h = float(t.height) * sc;
+        drawTexture(t, {d.x + (d.width - w) / 2, d.y + (d.height - h) / 2, w, h});
+    };
+    if (id.rfind("item:", 0) == 0) { drawItemIcon(itemByStringId(id.substr(5)), d); return; }
+    if (id == "belt") { fit(assets::belt(0, Dir::Right)); return; }
+    if (id.rfind("machine:", 0) == 0) {
+        MachineType t;
+        if (machineTypeFromSave(id.substr(8), t))
+            if (const Texture2D* tex = assets::machine(t)) fit(*tex);
+    }
+}
+
+void GameScreen::drawMarkerPin(Vector2 at, float size, bool label, const std::string& name, const std::string& symbol) {
     // a round head on a short point; `at` is the tip
     const Color pin{255, 120, 40, 255};
     float r = size / 2;
@@ -747,19 +778,28 @@ void GameScreen::drawMarkerPin(Vector2 at, float size, bool label, const std::st
     DrawTriangle({head.x - r * 0.7f, head.y + r * 0.4f}, at, {head.x + r * 0.7f, head.y + r * 0.4f}, pin);
     DrawTriangle({head.x + r * 0.7f, head.y + r * 0.4f}, at, {head.x - r * 0.7f, head.y + r * 0.4f}, pin);
     DrawCircleV(head, r, pin);
-    DrawCircleV(head, r * 0.4f, WHITE);
+    if (!symbol.empty() && size >= 14) {   // the symbol inside the head
+        DrawCircleV(head, r * 0.8f, WHITE);
+        drawMarkerSymbol(symbol, {head.x - r * 0.6f, head.y - r * 0.6f, r * 1.2f, r * 1.2f});
+    } else {
+        DrawCircleV(head, r * 0.4f, WHITE);
+    }
     if (!label) return;
+    // [symbol] name
     Vector2 m = measure(name, 16, true);
-    Rectangle bg{head.x - m.x / 2 - 6, head.y - r - m.y - 8, m.x + 12, m.y + 6};
+    float icon = symbol.empty() ? 0 : 20;
+    float w = m.x + 12 + (icon > 0 ? icon + 4 : 0);
+    Rectangle bg{head.x - w / 2, head.y - r - m.y - 8, w, m.y + 6};
     fillRound(bg, 6, Color{20, 20, 20, 180});
-    text(name, bg.x + 6, bg.y + 3, 16, WHITE, true);
+    if (icon > 0) drawMarkerSymbol(symbol, {bg.x + 5, bg.y + (bg.height - icon) / 2, icon, icon});
+    text(name, bg.x + 6 + (icon > 0 ? icon + 4 : 0), bg.y + 3, 16, WHITE, true);
 }
 
 void GameScreen::drawMarkers() {
     for (const MapMarker& mk : markers_) {
         Vector2 p = worldToUi(float(mk.tile.x * CELL_SIZE + CELL_SIZE / 2), float(mk.tile.y * CELL_SIZE + CELL_SIZE / 2));
         if (p.x < -200 || p.y < -60 || p.x > ui::screenW() + 200 || p.y > ui::screenH() + 60) continue;
-        drawMarkerPin(p, 16, mapMode(), mk.name);   // names in the map view; normal view: hover shows it
+        drawMarkerPin(p, 18, mapMode(), mk.name, mk.symbol);   // names in the map view; normal view: hover shows it
     }
 }
 
@@ -767,7 +807,7 @@ int GameScreen::markerAt(Vector2 sp) const {
     for (size_t i = markers_.size(); i-- > 0;) {
         const MapMarker& mk = markers_[i];
         Vector2 p = worldToUi(float(mk.tile.x * CELL_SIZE + CELL_SIZE / 2), float(mk.tile.y * CELL_SIZE + CELL_SIZE / 2));
-        Rectangle hit{p.x - 10, p.y - 28, 20, 30};
+        Rectangle hit{p.x - 11, p.y - 30, 22, 32};
         if (inRect(hit, sp)) return int(i);
     }
     return -1;

@@ -8,8 +8,10 @@
 #include <string>
 #include <vector>
 
-// A named pin on the map (P key), saved with the game.
-struct MapMarker { Vec2i tile; std::string name; };
+// A named pin on the map (P key), saved with the game. `symbol` is an
+// optional picture in front of the name: "item:<id>", "machine:<type>",
+// "belt" or "" (none).
+struct MapMarker { Vec2i tile; std::string name; std::string symbol; };
 
 // View settings saved with the game: camera, the Icons (Alt) toggle and the
 // map markers.
@@ -35,16 +37,9 @@ std::string sanitizeName(const std::string& name); // "" if invalid
 bool exists(const std::string& name);
 std::vector<std::string> listSaves();
 
-// Autosave: every save "X" has at most one autosave "X-autosave", written
-// every 5 minutes of play. The menu hides it behind "X" and offers it only
-// while it is newer than "X" (e.g. after a crash). Deleting / renaming "X"
-// takes its autosave along.
-std::string autosaveName(const std::string& name);
-bool isAutosave(const std::string& name);
-bool hasNewerAutosave(const std::string& name);
 // Time played in a save (seconds), -1 if it can't be read. Reads the file.
 double readPlayTime(const std::string& name);
-void remove(const std::string& name);       // (and its autosave)
+void remove(const std::string& name);
 bool rename(const std::string& oldName, const std::string& newName);
 std::string lastOpened();                 // "" if none
 void setLastOpened(const std::string& name);

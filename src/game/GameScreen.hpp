@@ -43,7 +43,7 @@ inline MachineType toMachine(Buildable b) {
 // Zoom limits. Below MAP_ZOOM the game switches to "map view": machines and
 // belts become plain coloured boxes, the player can't move and nothing can
 // be built or deleted (WASD pans the map instead).
-constexpr float MIN_ZOOM = 0.1f;
+constexpr float MIN_ZOOM = 0.01f;   // map view, zoomed all the way out (1 %)
 constexpr float MAX_ZOOM = 3.0f;
 constexpr float MAP_ZOOM = 0.4f;
 
@@ -71,6 +71,11 @@ struct View {
 Color machineMapColor(MachineType t);
 // A blueprint drawn like the map view, as big as fits in `square` (centred).
 void drawBlueprintMap(const Blueprint& bp, Rectangle square);
+// Map marker symbols: every sprite of the game (items, machines, belt).
+struct MarkerSymbol { std::string id, name; };
+const std::vector<MarkerSymbol>& markerSymbols();
+void drawMarkerSymbol(const std::string& id, Rectangle dest);   // nothing for ""
+std::string markerSymbolName(const std::string& id);
 
 class GameScreen {
 public:
@@ -80,8 +85,7 @@ public:
     GameScreen& operator=(const GameScreen&) = delete;
 
     void newGame(const std::string& name);
-    // fromAutosave: load "name-autosave" but keep playing as "name"
-    bool loadGame(const std::string& name, std::string* error, bool fromAutosave = false);
+    bool loadGame(const std::string& name, std::string* error);
 
     void handle(const Event& e);
     void update(float dt);   // runs fixed ticks + per-frame logic
@@ -135,6 +139,12 @@ private:
     bool zoomGateActive() const;
     void drawZoomGate();
     void enterMapMode();
+    // map view: drag with the left mouse button (when not copying / placing
+    // anything) or the middle button (always) to move the map
+    bool mapDragging_ = false;
+    int mapDragButton_ = 0;          // raylib MOUSE_BUTTON_*
+    Vector2 mapDragLast_{};          // real window pixels
+    void updateMapDrag();
     void drawMapView();
     std::unordered_map<Vec2i, Texture2D, Vec2iHash> mapTerrain_; // 1 pixel per tile, per chunk
 
@@ -446,9 +456,15 @@ private:
     Rectangle markerButtonRect() const;
     bool markerPlacingHandle(const Event& e);
     bool markerDialogOpen_ = false;
-    int markerEdit_ = -1;              // index being renamed, -1 = new marker
+    int markerEdit_ = -1;              // index being edited, -1 = new marker
     Vec2i markerTile_;
     std::optional<TextInput> markerNameInput_;
+    std::string markerSymbol_;         // chosen in the dialog ("" = none)
+    SearchBox markerSearch_;           // filters the symbols
+    float markerSymbolScroll_ = 0;
+    std::vector<std::string> markerSymbolChoices() const;   // "" (none) + matching symbols
+    Rectangle markerSymbolGrid() const;
+    Rectangle markerSymbolCell(int k) const;                // k-th choice, with scroll
     Rectangle markerDialogRect() const;
     void openMarkerDialog(Vec2i tile, int editIndex);
     void submitMarkerDialog();
@@ -457,7 +473,7 @@ private:
     int markerAt(Vector2 screenPos) const;    // index of the marker under the mouse, -1 if none
     Vector2 worldToUi(float wx, float wy) const;
     void drawMarkers();                // pins in the world / map view
-    void drawMarkerPin(Vector2 at, float size, bool label, const std::string& name);
+    void drawMarkerPin(Vector2 at, float size, bool label, const std::string& name, const std::string& symbol);
 
     // ---- search boxes ----
     SearchBox craftSearch_, pickerSearch_, bpSearch_, machineSearch_;
@@ -471,10 +487,10 @@ private:
     double playSeconds_ = 0;
     void drawClock();
 
-    // ---- autosave (every AUTOSAVE_SECONDS of play into "<name>-autosave") ----
+    // ---- autosave: every AUTOSAVE_SECONDS of play the game is simply saved
+    // under its own name (like pressing Save) ----
     static constexpr float AUTOSAVE_SECONDS = 300;
     float autosaveTimer_ = 0;
-    std::string autosaveName() const;
 
     // ---- small hints ----
     void drawPlacementHints();         // ghost colour reason, rotate / delete hints

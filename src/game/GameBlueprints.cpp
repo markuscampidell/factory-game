@@ -237,6 +237,20 @@ bool GameScreen::blueprintHandle(const Event& e) {
     if (bpBookDialogHandle(e)) return true;
     if (markerDialogHandle(e)) return true;
     if (markerPlacingHandle(e)) return true;
+    // a click on a map marker (not while building / copying): edit it
+    if (e.type == EvType::MouseDown && e.button == MB_LEFT && mode_ == BuildMode::None && bpMode_ == BpMode::None && !overUi(e.pos)) {
+        int mk = markerAt(e.pos);
+        if (mk >= 0) { openMarkerDialog(markers_[size_t(mk)].tile, mk); return true; }
+    }
+    // map view: click and drag moves the map (middle button: always)
+    if (e.type == EvType::MouseDown && mapMode() && !overUi(e.pos) &&
+        ((e.button == MB_LEFT && mode_ == BuildMode::None && bpMode_ == BpMode::None && !markerPlacing_) || e.button == MB_MIDDLE)) {
+        mapDragging_ = true;
+        mapDragButton_ = e.button == MB_LEFT ? MOUSE_BUTTON_LEFT : MOUSE_BUTTON_MIDDLE;
+        mapDragLast_ = GetMousePosition();
+        zoomToPlayer_ = false;
+        return true;
+    }
     // delete confirmation (modal) - a blueprint, or a book with everything in it
     if (bpDeleteConfirm_) {
         DialogResult r = bpDeleteConfirm_->handle(e);
@@ -875,15 +889,39 @@ void GameScreen::openConfigure(int index) {
 // Map markers (P): name dialog
 // ---------------------------------------------------------------------------
 Rectangle GameScreen::markerDialogRect() const {
-    return centeredRect(std::floor(ui::screenW() / 2), std::floor(ui::screenH() / 2) - 40, 420, 210);
+    return centeredRect(std::floor(ui::screenW() / 2), std::floor(ui::screenH() / 2) - 20, 520, 430);
+}
+
+namespace { constexpr float SYM_CELL = 40, SYM_GAP = 4, SYM_ROWS = 3; }
+
+Rectangle GameScreen::markerSymbolGrid() const {
+    Rectangle r = markerDialogRect();
+    return {r.x + 30, r.y + 196, r.width - 60, SYM_ROWS * (SYM_CELL + SYM_GAP) - SYM_GAP};
+}
+
+Rectangle GameScreen::markerSymbolCell(int k) const {
+    Rectangle g = markerSymbolGrid();
+    int cols = int((g.width + SYM_GAP) / (SYM_CELL + SYM_GAP));
+    return {g.x + float(k % cols) * (SYM_CELL + SYM_GAP), g.y + float(k / cols) * (SYM_CELL + SYM_GAP) - markerSymbolScroll_, SYM_CELL, SYM_CELL};
+}
+
+std::vector<std::string> GameScreen::markerSymbolChoices() const {
+    std::vector<std::string> out;
+    if (markerSearch_.text().empty()) out.push_back("");   // "none" first
+    for (auto& sym : markerSymbols())
+        if (markerSearch_.matches(sym.name)) out.push_back(sym.id);
+    return out;
 }
 
 void GameScreen::openMarkerDialog(Vec2i tile, int editIndex) {
     markerTile_ = tile;
     markerEdit_ = editIndex;
     std::string name = editIndex >= 0 ? markers_[size_t(editIndex)].name : "Marker " + std::to_string(markers_.size() + 1);
+    markerSymbol_ = editIndex >= 0 ? markers_[size_t(editIndex)].symbol : "";
+    markerSearch_.clear();
+    markerSymbolScroll_ = 0;
     Rectangle r = markerDialogRect();
-    markerNameInput_ = TextInput({r.x + 30, r.y + 76, r.width - 60, 40}, name);
+    markerNameInput_ = TextInput({r.x + 30, r.y + 72, r.width - 60, 40}, name);
     markerDialogOpen_ = true;
 }
 
@@ -892,10 +930,15 @@ void GameScreen::submitMarkerDialog() {
     size_t a = name.find_first_not_of(' ');
     if (a == std::string::npos) return;   // needs a name
     name = name.substr(a, name.find_last_not_of(' ') - a + 1);
-    if (markerEdit_ >= 0 && markerEdit_ < int(markers_.size())) markers_[size_t(markerEdit_)].name = name;
-    else markers_.push_back({markerTile_, name});
+    if (markerEdit_ >= 0 && markerEdit_ < int(markers_.size())) {
+        markers_[size_t(markerEdit_)].name = name;
+        markers_[size_t(markerEdit_)].symbol = markerSymbol_;
+    } else {
+        markers_.push_back({markerTile_, name, markerSymbol_});
+    }
     markerDialogOpen_ = false;
     markerNameInput_.reset();
+    markerSearch_.clear();
 }
 
 bool GameScreen::markerDialogHandle(const Event& e) {
@@ -904,9 +947,21 @@ bool GameScreen::markerDialogHandle(const Event& e) {
     Rectangle cancelBtn{r.x + 30, r.y + r.height - 58, 110, 40};
     Rectangle deleteBtn{r.x + r.width / 2 - 55, r.y + r.height - 58, 110, 40};
     Rectangle okBtn{r.x + r.width - 30 - 110, r.y + r.height - 58, 110, 40};
-    auto close = [&]() { markerDialogOpen_ = false; markerNameInput_.reset(); };
+    Rectangle grid = markerSymbolGrid();
+    markerSearch_.rect = {r.x + 30, r.y + 154, r.width - 60, 32};
+    auto close = [&]() { markerDialogOpen_ = false; markerNameInput_.reset(); markerSearch_.clear(); };
     if (e.type == EvType::MouseDown && (!inRect(r, e.pos) || inRect(panelCloseRect(r), e.pos))) { close(); return true; }
+    if (e.type == EvType::Wheel) {
+        if (inRect(grid, e.pos)) {
+            int cols = int((grid.width + SYM_GAP) / (SYM_CELL + SYM_GAP));
+            int rows = (int(markerSymbolChoices().size()) + cols - 1) / cols;
+            markerSymbolScroll_ = clampScroll(markerSymbolScroll_ - e.wheel * 40, rows * (SYM_CELL + SYM_GAP), grid.height);
+        }
+        return true;
+    }
     if (e.type == EvType::MouseDown && e.button == MB_LEFT) {
+        if (markerNameInput_) markerNameInput_->handle(e);   // (focus follows the click)
+        if (markerSearch_.handle(e)) { markerSymbolScroll_ = 0; return true; }
         if (inRect(cancelBtn, e.pos)) { close(); return true; }
         if (inRect(okBtn, e.pos)) { submitMarkerDialog(); return true; }
         if (markerEdit_ >= 0 && inRect(deleteBtn, e.pos)) {
@@ -914,11 +969,20 @@ bool GameScreen::markerDialogHandle(const Event& e) {
             close();
             return true;
         }
+        if (inRect(grid, e.pos)) {
+            auto choices = markerSymbolChoices();
+            for (size_t k = 0; k < choices.size(); ++k)
+                if (inRect(markerSymbolCell(int(k)), e.pos)) { markerSymbol_ = choices[k]; break; }
+        }
+        return true;
     }
-    if (markerNameInput_) {
-        markerNameInput_->handle(e);
-        if (markerNameInput_ && markerNameInput_->cancelled) { close(); return true; }
-        if (markerNameInput_ && markerNameInput_->submitted) { markerNameInput_->submitted = false; submitMarkerDialog(); }
+    if (e.type == EvType::KeyDown || e.type == EvType::Text) {
+        if (markerSearch_.focused()) { markerSearch_.handle(e); markerSymbolScroll_ = 0; return true; }
+        if (markerNameInput_) {
+            markerNameInput_->handle(e);
+            if (markerNameInput_ && markerNameInput_->cancelled) { close(); return true; }
+            if (markerNameInput_ && markerNameInput_->submitted) { markerNameInput_->submitted = false; submitMarkerDialog(); }
+        }
     }
     return true;   // modal
 }
@@ -928,14 +992,44 @@ void GameScreen::drawMarkerDialog() {
     Rectangle r = markerDialogRect();
     drawModalShade();
     drawPanel(r, markerEdit_ >= 0 ? "Map marker" : "New map marker");
-    text("Name:", r.x + 30, r.y + 56, 14, ui::TEXT_DIM);
+    text("Name:", r.x + 30, r.y + 52, 14, ui::TEXT_DIM);
     if (markerNameInput_) {
         markerNameInput_->update(GetFrameTime());
         markerNameInput_->draw();
     }
+    // symbol: what is chosen now, the search box and the grid
+    std::string chosen = markerSymbol_.empty() ? "none" : markerSymbolName(markerSymbol_);
+    text("Symbol (in front of the name): " + chosen, r.x + 30, r.y + 128, 14, ui::TEXT_DIM);
+    markerSearch_.rect = {r.x + 30, r.y + 154, r.width - 60, 32};
+    markerSearch_.draw(GetFrameTime());
+    Rectangle grid = markerSymbolGrid();
+    auto choices = markerSymbolChoices();
+    if (choices.empty()) textCentered("No symbol matches", grid.x + grid.width / 2, grid.y + 30, 16, ui::TEXT_DIM);
+    ui::beginScissor(grid);
+    for (size_t k = 0; k < choices.size(); ++k) {
+        Rectangle c = markerSymbolCell(int(k));
+        if (c.y + c.height < grid.y || c.y > grid.y + grid.height) continue;
+        bool sel = choices[k] == markerSymbol_;
+        fillRound(c, 6, sel ? ui::ACTIVE_SLOT : hovered(c) && inRect(grid, ui::mouse()) ? Color{255, 255, 255, 230} : Color{255, 255, 255, 140});
+        lineRound(c, 6, sel ? 2.0f : 1.0f, sel ? ui::CHOICE_SELECTED_OUTLINE : ui::CHOICE_OUTLINE);
+        if (choices[k].empty()) {   // none: a crossed-out circle
+            Vector2 m{c.x + c.width / 2, c.y + c.height / 2};
+            DrawRing(m, 9, 11, 0, 360, 24, rgba(120, 120, 120));
+            DrawLineEx({m.x - 7, m.y + 7}, {m.x + 7, m.y - 7}, 2, rgba(120, 120, 120));
+        } else {
+            drawMarkerSymbol(choices[k], {c.x + 5, c.y + 5, c.width - 10, c.height - 10});
+        }
+    }
+    EndScissorMode();
+    // names on hover
+    for (size_t k = 0; k < choices.size(); ++k)
+        if (!choices[k].empty() && inRect(grid, ui::mouse()) && hovered(markerSymbolCell(int(k)))) {
+            drawTooltip(markerSymbolName(choices[k]), ui::mouse());
+            break;
+        }
     drawButton({r.x + 30, r.y + r.height - 58, 110, 40}, "Cancel", ui::BTN);
     if (markerEdit_ >= 0) drawButton({r.x + r.width / 2 - 55, r.y + r.height - 58, 110, 40}, "Delete", ui::BTN_DANGER);
-    drawButton({r.x + r.width - 30 - 110, r.y + r.height - 58, 110, 40}, markerEdit_ >= 0 ? "Rename" : "Place", ui::BTN_OK);
+    drawButton({r.x + r.width - 30 - 110, r.y + r.height - 58, 110, 40}, markerEdit_ >= 0 ? "Save" : "Place", ui::BTN_OK);
 }
 
 // Holding a map marker ("Add map marker" button): left click on the world

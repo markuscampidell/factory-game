@@ -302,20 +302,6 @@ std::vector<std::string> listSaves() {
     return out;
 }
 
-std::string autosaveName(const std::string& name) { return name + "-autosave"; }
-
-bool isAutosave(const std::string& name) {
-    const std::string suffix = "-autosave";
-    return name.size() > suffix.size() && name.compare(name.size() - suffix.size(), suffix.size(), suffix) == 0;
-}
-
-bool hasNewerAutosave(const std::string& name) {
-    if (isAutosave(name) || !exists(name) || !exists(autosaveName(name))) return false;
-    std::error_code e1, e2;
-    auto tSave = fs::last_write_time(pathFor(name), e1), tAuto = fs::last_write_time(pathFor(autosaveName(name)), e2);
-    return !e1 && !e2 && tAuto > tSave;
-}
-
 double readPlayTime(const std::string& name) {
     std::ifstream f(pathFor(name));
     if (!f) return -1;
@@ -331,7 +317,6 @@ double readPlayTime(const std::string& name) {
 void remove(const std::string& name) {
     std::error_code ec;
     fs::remove(pathFor(name), ec);
-    if (!isAutosave(name)) fs::remove(pathFor(autosaveName(name)), ec);
     persist();
 }
 
@@ -340,11 +325,6 @@ bool rename(const std::string& oldName, const std::string& newName) {
     std::error_code ec;
     fs::rename(pathFor(oldName), pathFor(newName), ec);
     if (ec) return false;
-    if (!isAutosave(oldName) && !isAutosave(newName)) {   // the autosave goes along
-        std::error_code ec2;
-        fs::remove(pathFor(autosaveName(newName)), ec2);
-        if (fs::exists(pathFor(autosaveName(oldName)), ec2)) fs::rename(pathFor(autosaveName(oldName)), pathFor(autosaveName(newName)), ec2);
-    }
     if (wasLast) setLastOpened(newName);
     persist();
     return true;
@@ -374,7 +354,7 @@ bool saveGame(const World& w, const Player& p, const CameraState& cam, const std
     data["player"] = {{"x", p.rect.cx()}, {"y", p.rect.cy()}, {"inventory", slotsToJson(p.inventory)}};
     data["camera"] = {{"x", cam.x}, {"y", cam.y}, {"zoom", cam.zoom}, {"show_outputs", cam.showOutputs}};
     json markers = json::array();
-    for (const MapMarker& m : cam.markers) markers.push_back({{"x", m.tile.x}, {"y", m.tile.y}, {"name", m.name}});
+    for (const MapMarker& m : cam.markers) markers.push_back({{"x", m.tile.x}, {"y", m.tile.y}, {"name", m.name}, {"symbol", m.symbol}});
     data["markers"] = markers;
     data["play_time"] = cam.playSeconds;
     data["seed"] = w.seed;
@@ -449,7 +429,8 @@ bool loadGame(World& w, Player& p, CameraState& cam, const std::string& name, st
         }
         cam.playSeconds = std::max(0.0, data.value("play_time", 0.0));
         for (const json& jm : data.value("markers", json::array()))
-            if (jm.is_object()) cam.markers.push_back({{jm.value("x", 0), jm.value("y", 0)}, jm.value("name", std::string("Marker"))});
+            if (jm.is_object())
+                cam.markers.push_back({{jm.value("x", 0), jm.value("y", 0)}, jm.value("name", std::string("Marker")), jm.value("symbol", std::string())});
 
         if (data.contains("explored_chunks") && data["explored_chunks"].is_array())
             for (const json& c : data["explored_chunks"])

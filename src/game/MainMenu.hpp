@@ -7,7 +7,7 @@
 #include <vector>
 
 struct MenuAction {
-    enum Kind { None, NewGame, LoadGame, LoadAutosave, Quit } kind = None;   // LoadAutosave: name = the normal save
+    enum Kind { None, NewGame, LoadGame, Quit } kind = None;
     std::string name;
 };
 
@@ -48,7 +48,7 @@ private:
     std::vector<std::pair<std::string, Rectangle>> rootButtons_;
     Rectangle startRect_{}, backRect_{}, loadBackRect_{};
     Rectangle newGamePanel_{}, renamePanel_{}, renameOkRect_{}, renameCancelRect_{};
-    struct Row { Rectangle name, edit, del, autosave; std::string save; };   // autosave: width 0 = none newer
+    struct Row { Rectangle name, edit, del; std::string save; };
     std::vector<Row> rows_;
     Rectangle viewport_{};
     float contentHeight_ = 0, scroll_ = 0;

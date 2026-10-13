@@ -30,25 +30,32 @@ void Player::update(World& world, int inX, int inY) {
     if (std::fabs(dx) < 0.01f) dx = 0;
     if (std::fabs(dy) < 0.01f) dy = 0;
 
-    if (dx != 0) {
-        rect.x += dx;
-        for (const Machine* m : machinesNear(world, rect)) {
-            RectF mr = m->pixelRect();
-            if (rect.intersects(mr)) {
-                if (dx > 0) rect.x = mr.left() - rect.w;
-                else rect.x = mr.right();
-                dx = 0;
+    // Move in small steps (at most a quarter tile each), so even a very
+    // fast player can't jump over a machine between two checks.
+    const float maxStep = CELL_SIZE / 4.0f;
+    int steps = int(std::ceil(std::max(std::fabs(dx), std::fabs(dy)) / maxStep));
+    float sx = steps > 0 ? dx / float(steps) : 0, sy = steps > 0 ? dy / float(steps) : 0;
+    for (int k = 0; k < steps; ++k) {
+        if (sx != 0) {
+            rect.x += sx;
+            for (const Machine* m : machinesNear(world, rect)) {
+                RectF mr = m->pixelRect();
+                if (rect.intersects(mr)) {
+                    if (sx > 0) rect.x = mr.left() - rect.w;
+                    else rect.x = mr.right();
+                    dx = sx = 0;
+                }
             }
         }
-    }
-    if (dy != 0) {
-        rect.y += dy;
-        for (const Machine* m : machinesNear(world, rect)) {
-            RectF mr = m->pixelRect();
-            if (rect.intersects(mr)) {
-                if (dy > 0) rect.y = mr.top() - rect.h;
-                else rect.y = mr.bottom();
-                dy = 0;
+        if (sy != 0) {
+            rect.y += sy;
+            for (const Machine* m : machinesNear(world, rect)) {
+                RectF mr = m->pixelRect();
+                if (rect.intersects(mr)) {
+                    if (sy > 0) rect.y = mr.top() - rect.h;
+                    else rect.y = mr.bottom();
+                    dy = sy = 0;
+                }
             }
         }
     }
