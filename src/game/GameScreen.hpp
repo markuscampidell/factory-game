@@ -110,9 +110,20 @@ private:
     float targetZoom_ = 1.0f;       // where the smooth zoom is heading
     Vector2 zoomAnchor_{};          // real window pixels kept fixed while zooming
     bool zoomToPlayer_ = false;     // M / leaving the map: centre on the player
-    void toggleMap();               // M / Map button
+    void toggleMap();               // M / minimap click / zoom gate
     float lastNormalZoom_ = 1.0f;   // zoom to return to when leaving the map
-    Rectangle mapButtonRect() const;
+    // Zoom gate: the wheel / + / - stop at the edge of the normal view (and
+    // of the map view). ZOOM_GATE_STEPS more notches in the same direction,
+    // each within ZOOM_GATE_TIME of the last, switch views. A bar in the
+    // middle of the screen shows the progress.
+    static constexpr int ZOOM_GATE_STEPS = 5;
+    static constexpr double ZOOM_GATE_TIME = 1.0;
+    int zoomGate_ = 0;              // notches so far
+    int zoomGateDir_ = 0;           // +1 towards the map, -1 back to normal
+    double zoomGateLast_ = 0;       // GetTime() of the last notch
+    float zoomGateShown_ = 0;       // drawn fill (0..1), glides after zoomGate_
+    bool zoomGateActive() const;
+    void drawZoomGate();
     void enterMapMode();
     void drawMapView();
     std::unordered_map<Vec2i, Texture2D, Vec2iHash> mapTerrain_; // 1 pixel per tile, per chunk
@@ -328,7 +339,7 @@ private:
     Rectangle inventoryButtonRect() const;
     Rectangle craftButtonRect() const;
     Rectangle minimapRect() const;
-    bool minimapVisible() const { return !mapMode(); }
+    bool minimapVisible() const { return true; }   // also in map view (click: back)
     void toggleInventory();          // TAB / Inventory button
     void toggleCrafting();           // F / Handcrafting button
     void drawEdgeButtons();          // Inventory / Handcrafting (under the panels)

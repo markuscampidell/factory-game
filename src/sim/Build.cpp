@@ -2,6 +2,7 @@
 // belt_system.py / machine_system.py.
 #include "Build.hpp"
 #include <algorithm>
+#include <cmath>
 #include <unordered_set>
 
 const ItemAmounts& beltBuildCost() {
@@ -87,15 +88,47 @@ static ItemId firstOre(World& w, MachineType t, Vec2i tl) {
     return ore;
 }
 
-PlacePlan Builder::planPlacement(const std::vector<PlaceRequest>& reqs, bool allowReplace, const std::set<int>* protectedIds) const {
+Vec2i Builder::playerChunk() const {
+    int tx = int(std::floor(player.rect.cx() / CELL_SIZE)), ty = int(std::floor(player.rect.cy() / CELL_SIZE));
+    return {floorDiv(tx, CHUNK_SIZE), floorDiv(ty, CHUNK_SIZE)};
+}
+
+void Builder::reachTiles(int& x0, int& y0, int& x1, int& y1) const {
+    Vec2i c = playerChunk();
+    x0 = (c.x - blueprintReach) * CHUNK_SIZE;
+    y0 = (c.y - blueprintReach) * CHUNK_SIZE;
+    x1 = (c.x + blueprintReach + 1) * CHUNK_SIZE - 1;
+    y1 = (c.y + blueprintReach + 1) * CHUNK_SIZE - 1;
+}
+
+bool Builder::inBlueprintReach(Vec2i t) const {
+    if (blueprintReach < 0) return true;
+    int x0, y0, x1, y1;
+    reachTiles(x0, y0, x1, y1);
+    return t.x >= x0 && t.x <= x1 && t.y >= y0 && t.y <= y1;
+}
+
+PlacePlan Builder::planPlacement(const std::vector<PlaceRequest>& reqs, bool allowReplace, const std::set<int>* protectedIds,
+                                 bool limitReach) const {
     PlacePlan plan;
     World& w = const_cast<World&>(world);   // reading ore generates terrain; nothing else changes
     std::set<int> rmBelts, rmMachines;
     ItemAmounts cost, refunds;
-    bool blocked = false, noOre = false, undiscovered = false;
+    bool blocked = false, noOre = false, undiscovered = false, outOfReach = false;
     for (const PlaceRequest& r : reqs) {
         PlaceStatus st = PlaceStatus::Ok;
         int keep = -1;
+        if (limitReach && blueprintReach >= 0) {   // before anything that reads the world
+            const MachineSpec& s = machineSpec(r.type);
+            int w = r.belt ? 1 : s.w, h = r.belt ? 1 : s.h;
+            if (!inBlueprintReach(r.pos) || !inBlueprintReach(r.pos + Vec2i{w - 1, h - 1})) st = PlaceStatus::OutOfReach;
+        }
+        if (st == PlaceStatus::OutOfReach) {
+            outOfReach = true;
+            plan.each.push_back(st);
+            plan.existing.push_back(-1);
+            continue;
+        }
         if (requireExplored) {   // checked first: reading ore below would explore the chunk
             const MachineSpec& s = machineSpec(r.type);
             int w = r.belt ? 1 : s.w, h = r.belt ? 1 : s.h;
@@ -153,6 +186,7 @@ PlacePlan Builder::planPlacement(const std::vector<PlaceRequest>& reqs, bool all
     plan.cost = cost;
     plan.removeBelts.assign(rmBelts.begin(), rmBelts.end());
     plan.removeMachines.assign(rmMachines.begin(), rmMachines.end());
+    if (outOfReach) { plan.status = PlaceStatus::OutOfReach; return plan; }
     if (blocked) { plan.status = PlaceStatus::Blocked; return plan; }
     if (undiscovered) { plan.status = PlaceStatus::Undiscovered; return plan; }
     if (noOre) { plan.status = PlaceStatus::NoOre; return plan; }
@@ -489,7 +523,7 @@ static std::vector<PlaceRequest> blueprintRequests(const Blueprint& bp, Vec2i tl
 }
 
 Builder::BlueprintCheck Builder::checkBlueprint(const Blueprint& bp, Vec2i tl, bool allowReplace) const {
-    PlacePlan plan = planPlacement(blueprintRequests(bp, tl), allowReplace);
+    PlacePlan plan = planPlacement(blueprintRequests(bp, tl), allowReplace, nullptr, true);
     BlueprintCheck c;
     c.status = plan.status;
     c.cost = plan.cost;
@@ -501,7 +535,7 @@ Builder::BlueprintCheck Builder::checkBlueprint(const Blueprint& bp, Vec2i tl, b
 bool Builder::placeBlueprint(const Blueprint& bp, Vec2i tl, bool allowReplace, ItemAmounts* delta) {
     if (bp.empty()) return false;
     auto reqs = blueprintRequests(bp, tl);
-    PlacePlan plan = planPlacement(reqs, allowReplace);
+    PlacePlan plan = planPlacement(reqs, allowReplace, nullptr, true);
     if (plan.status != PlaceStatus::Ok) return false;   // all or nothing
     if (delta) *delta = plan.delta;
     executePlacement(reqs, plan);

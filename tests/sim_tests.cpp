@@ -433,6 +433,25 @@ static void testBlueprints() {
     loaded = save::loadBlueprints(&books);
     CHECK(books.size() == 1 && books[0].id == 7 && books[0].name == "My book" && loaded.size() == 3 && loaded[0].book == 0 &&
           loaded[1].book == 7 && loaded[2].book == 0, "blueprint books round trip");
+    // reach: only the player's chunk and 4 chunks around it (exact chunk borders)
+    {
+        World rw; rw.seed = 1;
+        Player rp; rp.setCenter(5 * CELL_SIZE + 1, 5 * CELL_SIZE + 1);   // in chunk (0, 0)
+        rp.inventory.tryAdd(IRON_INGOT, 1000);
+        rp.inventory.tryAdd(COPPER_INGOT, 1000);
+        Builder rb(rw, rp);
+        rb.blueprintReach = 4;
+        Blueprint line;
+        line.w = 3; line.h = 1;
+        for (int i = 0; i < 3; ++i) line.belts.push_back({{i, 0}, Dir::Right});
+        int edge = 5 * CHUNK_SIZE;   // first tile outside, to the right
+        CHECK(rb.checkBlueprint(line, {edge - 3, 0}).status == PlaceStatus::Ok, "blueprint at the edge of the reach");
+        CHECK(rb.checkBlueprint(line, {edge - 2, 0}).status == PlaceStatus::OutOfReach, "blueprint sticking out of the reach");
+        CHECK(rb.checkBlueprint(line, {-4 * CHUNK_SIZE, -4 * CHUNK_SIZE}).status == PlaceStatus::Ok &&
+              rb.checkBlueprint(line, {-4 * CHUNK_SIZE - 1, 0}).status == PlaceStatus::OutOfReach, "reach on the left / top");
+        CHECK(!rb.placeBlueprint(line, {edge, 0}) && rw.beltAt({edge, 0}) == nullptr, "placed outside the reach");
+        CHECK(rb.placeMachine(MachineType::Smelter, {edge + 10, 0}, Dir::Right, false, nullptr) >= 0, "single machines aren't limited");
+    }
     std::printf("  blueprint: %zu belts + %zu machines copied, cost paid exactly, blocked/no-funds placements change nothing\n",
                 bp.belts.size(), bp.machines.size());
 }

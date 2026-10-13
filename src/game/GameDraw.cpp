@@ -54,6 +54,7 @@ void GameScreen::draw() {
     BeginMode2D(c2d);
     if (mapMode()) {
         drawMapView();
+        if (bpMode_ != BpMode::None) drawBlueprintMode();   // copy / paste / area delete / blueprints
     } else {
         drawTerrain();
         drawGrid();
@@ -92,6 +93,7 @@ void GameScreen::draw() {
     text("FPS: " + std::to_string(int(fps_)), 10, 60, 20, hud);
     text("Zoom: " + std::to_string(int(std::lround(cam_.zoom * 100))) + "%" + (mapMode() ? "  (map view)" : ""), 10, 85, 20, hud);
 
+    drawZoomGate();
     drawHudTooltips();
     drawModals(dt);
     // notifications on top of everything ("Saved as ..." over the Game Menu)
@@ -615,13 +617,36 @@ void GameScreen::drawHandMining() {
     DrawRectangleRec({bar.x, bar.y, bar.width * p, bar.height}, Color{0, 230, 0, 255});
 }
 
+// The zoom gate's progress: a box in the middle of the screen.
+void GameScreen::drawZoomGate() {
+    if (!zoomGateActive()) { zoomGateShown_ = 0; return; }
+    // the fill glides to the new fifth (about 90 % of the way in 0.15 s)
+    float goal = float(zoomGate_) / float(ZOOM_GATE_STEPS);
+    if (goal < zoomGateShown_) zoomGateShown_ = 0;   // a new run starts empty
+    zoomGateShown_ += (goal - zoomGateShown_) * (1.0f - std::exp(-GetFrameTime() * 15.0f));
+    std::string label = zoomGateDir_ > 0 ? "Keep zooming out for the map view" : "Keep zooming in for the normal view";
+    float w = std::max(260.0f, measure(label, 18, true).x + 40);
+    Rectangle box = centeredRect(ui::screenW() / 2, ui::screenH() / 2, w, 78);
+    fillRound(box, 12, ui::PANEL_BG);
+    textCentered(label, box.x + box.width / 2, box.y + 22, 18, ui::TEXT, true);
+    // one continuous rounded bar
+    Rectangle track{box.x + 20, box.y + 44, w - 40, 18};
+    fillRound(track, 9, Color{255, 255, 255, 120});
+    float fw = track.width * zoomGateShown_;
+    if (fw >= 1) {
+        // never narrower than it is high, so both ends stay round
+        Rectangle fill{track.x, track.y, std::max(fw, track.height), track.height};
+        fillRound(fill, track.height / 2, ui::ACTIVE_SLOT);
+    }
+    lineRound(track, 9, 1, ui::CHOICE_OUTLINE);
+}
+
 void GameScreen::drawFloatTexts(float dt) {
     const float LIFE = 1.6f;
     for (auto& f : floatTexts_) f.age += dt;
     floatTexts_.erase(std::remove_if(floatTexts_.begin(), floatTexts_.end(),
                                      [&](const FloatText& f) { return f.age >= LIFE; }),
                       floatTexts_.end());
-    if (mapMode()) return;
     for (auto& f : floatTexts_) {
         // world -> screen (UI coordinates), drifting upwards and fading out
         float sx = (f.wx - cam_.x) * cam_.zoom / ui::scale();

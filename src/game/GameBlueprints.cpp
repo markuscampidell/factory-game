@@ -10,6 +10,9 @@ const Color SELECT_LINE{90, 170, 255, 200};
 const Color CUT_FILL{255, 70, 70, 50};
 const Color CUT_LINE{255, 70, 70, 210};
 const Color BAD_RED{255, 110, 110, 255};
+const Color REACH_FILL{120, 210, 255, 22};    // where blueprints may go
+const Color REACH_LINE{120, 210, 255, 230};
+const Color REACH_OUTSIDE{0, 0, 0, 90};
 
 std::string objects(int n) { return std::to_string(n) + (n == 1 ? " object" : " objects"); }
 
@@ -21,7 +24,6 @@ constexpr float BOOK_H = 46, EMPTY_BOOK_H = 30, BOOK_INDENT = 28, DRAG_MIN = 6;
 // State changes
 // ---------------------------------------------------------------------------
 void GameScreen::startSelecting(bool forList) {
-    if (mapMode()) { notify("Zoom in to copy"); return; }
     closeAllPanels();
     mode_ = BuildMode::Building;
     placingBelt_ = false;
@@ -36,7 +38,6 @@ void GameScreen::startSelecting(bool forList) {
 }
 
 void GameScreen::startCutting() {
-    if (mapMode()) { notify("Zoom in to delete"); return; }
     closeAllPanels();
     mode_ = BuildMode::Deleting;
     placingBelt_ = false;
@@ -65,7 +66,6 @@ void GameScreen::finishCut(Vec2i end) {
 }
 
 void GameScreen::startPlacing(const Blueprint& bp) {
-    if (mapMode()) { notify("Zoom in to paste"); return; }
     closeAllPanels();
     mode_ = BuildMode::Building;
     placingBelt_ = false;
@@ -158,7 +158,6 @@ bool GameScreen::bpSaveHandle(const Event& e) {
     if (e.type == EvType::MouseDown && (!inRect(r, e.pos) || inRect(panelCloseRect(r), e.pos))) { cancel(); return true; }
     if (e.type == EvType::MouseDown && e.button == MB_LEFT) {
         if (inRect(reselect, e.pos)) {
-            if (mapMode()) { notify("Zoom in to select"); return true; }
             bpPendingName_ = bpNameInput_ ? bpNameInput_->text : "";   // keep the name
             bpSaveOpen_ = false;
             bpNameInput_.reset();
@@ -214,6 +213,7 @@ void GameScreen::placeHeldBlueprint(Vector2 mouse) {
         case PlaceStatus::NoFunds: floatText(w.x, w.y, "Not enough items in your inventory", BAD_RED); return;
         case PlaceStatus::NoSpace: floatText(w.x, w.y, "Not enough inventory space for what gets replaced", BAD_RED); return;
         case PlaceStatus::Undiscovered: floatText(w.x, w.y, "You haven't discovered this area yet", BAD_RED); return;
+        case PlaceStatus::OutOfReach: floatText(w.x, w.y, "Blueprints only fit inside the square around you", BAD_RED); return;
         default: break;
     }
     ItemAmounts delta;
@@ -360,8 +360,10 @@ bool GameScreen::blueprintHandle(const Event& e) {
 
     if (bpMode_ == BpMode::None) return false;
 
-    // right click: back to normal building (or normal deleting after Ctrl+X)
+    // right click: back to normal building (or normal deleting after Ctrl+X);
+    // in map view, where single building / deleting isn't allowed: stop
     if (e.type == EvType::MouseDown && e.button == MB_RIGHT) {
+        if (mapMode()) { resetBuildState(); return true; }
         mode_ = bpMode_ == BpMode::Cutting ? BuildMode::Deleting : BuildMode::Building;
         bpMode_ = BpMode::None;
         bpDragging_ = false;
@@ -439,11 +441,31 @@ void GameScreen::drawBlueprintMode() {
         return;
     }
 
-    // Placing: ghost of everything at the mouse
+    // Placing: first the area it may go in - the player's chunk and
+    // blueprintReach chunks around it, exactly on the chunk borders
+    if (builder_.blueprintReach >= 0) {
+        int x0, y0, x1, y1;
+        builder_.reachTiles(x0, y0, x1, y1);
+        Rectangle area{float(x0 * CELL_SIZE), float(y0 * CELL_SIZE), float((x1 - x0 + 1) * CELL_SIZE), float((y1 - y0 + 1) * CELL_SIZE)};
+        // everything outside the square is darkened, so the square stands out
+        float vx0 = cam_.x - 2, vy0 = cam_.y - 2, vx1 = cam_.x + cam_.viewW() + 2, vy1 = cam_.y + cam_.viewH() + 2;
+        float ax1 = area.x + area.width, ay1 = area.y + area.height;
+        if (area.y > vy0) DrawRectangleRec({vx0, vy0, vx1 - vx0, area.y - vy0}, REACH_OUTSIDE);
+        if (ay1 < vy1) DrawRectangleRec({vx0, ay1, vx1 - vx0, vy1 - ay1}, REACH_OUTSIDE);
+        float my0 = std::max(vy0, area.y), my1 = std::min(vy1, ay1);
+        if (my1 > my0) {
+            if (area.x > vx0) DrawRectangleRec({vx0, my0, area.x - vx0, my1 - my0}, REACH_OUTSIDE);
+            if (ax1 < vx1) DrawRectangleRec({ax1, my0, vx1 - ax1, my1 - my0}, REACH_OUTSIDE);
+        }
+        DrawRectangleRec(area, REACH_FILL);
+        DrawRectangleLinesEx(area, 4 * t, REACH_LINE);
+    }
+    // ghost of everything at the mouse
     Vec2i tl = Builder::blueprintTopLeft(placing_, mouseTile());
     Builder::BlueprintCheck c = builder_.checkBlueprint(placing_, tl, shiftDown());
     const Color red{255, 0, 0, 110}, purple{128, 0, 128, 110}, yellow{255, 255, 0, 90}, orange{255, 165, 0, 100};
     const Color dark{20, 20, 20, 170};   // undiscovered area
+    const Color outside{150, 0, 0, 170}; // outside the square around the player
     auto itemTint = [&](Rectangle r) {   // the whole placement fails for item reasons
         if (c.status == PlaceStatus::NoFunds) DrawRectangleRec(r, yellow);
         else if (c.status == PlaceStatus::NoSpace) DrawRectangleRec(r, orange);
@@ -455,6 +477,7 @@ void GameScreen::drawBlueprintMode() {
         drawTexture(assets::belt(b.mask, b.dir), r, Color{255, 255, 255, 160});
         if (c.belts[i] == PlaceStatus::Blocked) DrawRectangleRec(r, red);
         else if (c.belts[i] == PlaceStatus::Undiscovered) DrawRectangleRec(r, dark);
+        else if (c.belts[i] == PlaceStatus::OutOfReach) DrawRectangleRec(r, outside);
         else itemTint(r);
     }
     for (size_t i = 0; i < placing_.machines.size(); ++i) {
@@ -471,6 +494,7 @@ void GameScreen::drawBlueprintMode() {
         if (c.machines[i] == PlaceStatus::Blocked) DrawRectangleRec(r, red);
         else if (c.machines[i] == PlaceStatus::NoOre) DrawRectangleRec(r, purple);
         else if (c.machines[i] == PlaceStatus::Undiscovered) DrawRectangleRec(r, dark);
+        else if (c.machines[i] == PlaceStatus::OutOfReach) DrawRectangleRec(r, outside);
         else itemTint(r);
     }
     Rectangle outline{float(tl.x * CELL_SIZE), float(tl.y * CELL_SIZE), float(placing_.w * CELL_SIZE), float(placing_.h * CELL_SIZE)};
@@ -481,12 +505,20 @@ void GameScreen::drawBlueprintMode() {
 // Drawing (screen space): "Needs: ..." while holding something to build
 // ---------------------------------------------------------------------------
 void GameScreen::drawCostInfo() {
-    if (mapMode() || mode_ != BuildMode::Building || bpSaveOpen_) return;
+    if (mode_ != BuildMode::Building || bpSaveOpen_) return;
     // only what is actually new: identical objects underneath are kept for free
     ItemAmounts cost;
     bool replace = shiftDown();
     if (bpMode_ == BpMode::Placing) {
-        cost = builder_.checkBlueprint(placing_, Builder::blueprintTopLeft(placing_, mouseTile()), replace).cost;
+        auto check = builder_.checkBlueprint(placing_, Builder::blueprintTopLeft(placing_, mouseTile()), replace);
+        if (check.status == PlaceStatus::OutOfReach) {
+            std::string msg = "Outside the square around you - move closer";
+            Rectangle r = centeredRect(ui::screenW() / 2, 120, measure(msg, 18).x + 28, 32);
+            fillRound(r, 10, ui::PANEL_BG);
+            textCentered(msg, r.x + r.width / 2, r.y + 16, 18, Color{170, 20, 20, 255}, true);
+            return;
+        }
+        cost = check.cost;
     } else if (bpMode_ != BpMode::None) {
         return;
     } else if (selected_ == Buildable::Belt) {
@@ -518,15 +550,15 @@ void GameScreen::drawCostInfo() {
 // ---------------------------------------------------------------------------
 void GameScreen::drawBlueprintList() {
     // info box while selecting / cutting (placing shows drawCostInfo())
-    if ((bpMode_ == BpMode::Selecting || bpMode_ == BpMode::Cutting) && !mapMode() && !bpSaveOpen_) {
+    if ((bpMode_ == BpMode::Selecting || bpMode_ == BpMode::Cutting) && !bpSaveOpen_) {
         std::string line1, line2;
         if (bpMode_ == BpMode::Selecting) {
             line1 = bpForList_ ? "New blueprint: drag a rectangle" : "Copy: drag a rectangle";
             line1 += " (max " + std::to_string(MAX_SELECTION) + " x " + std::to_string(MAX_SELECTION) + ")";
-            line2 = "Right click: back to building   ESC: cancel";
+            line2 = mapMode() ? "Right click / ESC: cancel" : "Right click: back to building   ESC: cancel";
         } else {
             line1 = "Delete: drag a rectangle (max " + std::to_string(MAX_SELECTION) + " x " + std::to_string(MAX_SELECTION) + ")";
-            line2 = "Right click: normal deleting   ESC: cancel";
+            line2 = mapMode() ? "Right click / ESC: cancel" : "Right click: normal deleting   ESC: cancel";
         }
         float w = std::max(measure(line1, 18).x, measure(line2, 16).x) + 28;
         Rectangle r = centeredRect(ui::screenW() / 2, 128, w, 52);   // top centre, out of the way

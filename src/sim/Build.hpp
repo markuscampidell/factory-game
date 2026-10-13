@@ -17,7 +17,9 @@
 #include <vector>
 
 // Undiscovered: (part of) it would be in a chunk you haven't explored yet.
-enum class PlaceStatus : uint8_t { Ok, Blocked, NoSpace, NoFunds, NoOre, Undiscovered };
+// OutOfReach: (part of) a blueprint / copy would be outside the chunks
+// around the player (Builder::blueprintReach).
+enum class PlaceStatus : uint8_t { Ok, Blocked, NoSpace, NoFunds, NoOre, Undiscovered, OutOfReach };
 
 const ItemAmounts& beltBuildCost();
 
@@ -69,6 +71,14 @@ public:
     // leave this off).
     bool requireExplored = false;
     bool tileExplored(Vec2i t) const { return world.isExplored(floorDiv(t.x, CHUNK_SIZE), floorDiv(t.y, CHUNK_SIZE)); }
+    // Blueprints and copies can only be placed in the chunk the player
+    // stands in and `blueprintReach` chunks around it (the game uses 4, so
+    // 9 x 9 chunks; -1 = anywhere, the headless tests leave it off).
+    int blueprintReach = -1;
+    Vec2i playerChunk() const;
+    // The allowed area in tiles: x0..x1, y0..y1 inclusive (only if reach >= 0)
+    void reachTiles(int& x0, int& y0, int& x1, int& y1) const;
+    bool inBlueprintReach(Vec2i t) const;
     void gatherOccupants(const std::vector<Vec2i>& cells, std::vector<int>& belts, std::vector<int>& machines) const;
     bool applyRefunds(Inventory& inv, const std::vector<int>& belts, const std::vector<int>& machines) const;
     // Exactly what applyRefunds() gives back: build cost + contents.
@@ -78,8 +88,9 @@ public:
     // (positive = got back, negative = paid), e.g. for "+1 Iron Ingot" texts.
 
     // ---- placing anything (see PlaceRequest) ----
+    // limitReach: everything must be inside the blueprint reach (blueprints / copies)
     PlacePlan planPlacement(const std::vector<PlaceRequest>& reqs, bool allowReplace,
-                            const std::set<int>* protectedIds = nullptr) const;
+                            const std::set<int>* protectedIds = nullptr, bool limitReach = false) const;
     // Does it (plan.status must be Ok). Returns the belt / machine id per request.
     std::vector<int> executePlacement(const std::vector<PlaceRequest>& reqs, const PlacePlan& plan);
 

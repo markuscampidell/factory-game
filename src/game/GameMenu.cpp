@@ -16,7 +16,7 @@ const std::vector<ControlSection>& controlSections() {
         {"Zoom", {{"Scroll Wheel (over the world)", "Zoom in / out around the mouse"},
                   {"+ / -", "Zoom in / out"},
                   {"Minimap", "Bottom left: shows the area around you. Click it to open the map view"},
-                  {"Map view", "M or the Map button (the mouse wheel stops before it). Zoomed far out, everything built is drawn as plain boxes. You can't move, build or delete there - zoom back in to continue"}}},
+                  {"Map view", "M, a click on the minimap, or keep zooming out: at the furthest normal zoom, 5 more notches in a row (a bar in the middle of the screen fills up; it empties after a 1 s pause). Leaving works the same way, zooming in. Zoomed far out, everything built is drawn as plain boxes. You can't move, build single things or delete single things there, but Copy / Paste (Ctrl + C / V), Delete area (Ctrl + X) and blueprints work"}}},
         {"Menus (ESC)", {{"ESC", "Close the open panels (an open item picker first), then leave build mode, then open the Game Menu. In the Game Menu: one step back"},
                          {"TAB / Inventory", "Toggle your inventory (button on the left edge)"},
                          {"F / Handcrafting", "Toggle the hand-crafting panel (button on the right edge)"},
@@ -27,7 +27,7 @@ const std::vector<ControlSection>& controlSections() {
           {"8 / X", "Toggle delete mode"},
           {"Click a hotbar slot", "Same as pressing its number - the row is always clickable"},
           {"Alt / Alt button (bottom right)", "Show / hide the output icons on machines"},
-          {"M / Map button (bottom right)", "Map view on / off (back to the zoom you had)"},
+          {"M / minimap (bottom left)", "Map view on / off (back to the zoom you had)"},
           {"Blueprints button (bottom right)", "Open the blueprint list (same as B)"},
           {"C", "Point at a machine or belt and press this to pick its type into the hotbar"},
           {"Middle Click", "Pick up a machine/belt/splitter (with its direction) to build more of it. Recipe and filters stay default; not saved, Ctrl + V ignores it"},
@@ -51,6 +51,7 @@ const std::vector<ControlSection>& controlSections() {
           {"B", "Open the blueprint list: Add, Use or Delete blueprints"},
           {"Add blueprint book", "In the blueprint list: make a named book. Click its headline to open / close it; drag a blueprint onto a book to put it in, or onto empty space to take it out. Deleting a book deletes the blueprints in it. 'Add blueprint' on a book saves a new blueprint straight into it"},
           {"Configure", "On a blueprint in the list: rename it or Reselect its area"},
+          {"Placing area", "Blueprints and copies can only be placed in your chunk and 4 chunks around it (9 x 9 chunks). While you hold one, that square is outlined"},
           {"Right Click", "While copying/placing: back to normal building"},
           {"ESC", "Cancel copying/placing completely"}}},
         {"Crafting", {{"Left Click", "Select a recipe, or press Produce/Cancel"},
@@ -96,7 +97,6 @@ Rectangle saveAsPanelRect(float w, float h) { return centeredRect(std::floor(w /
 // ---------------------------------------------------------------------------
 Rectangle GameScreen::blueprintButtonRect() const { return {ui::screenW() - 10 - 120, ui::screenH() - 62, 120, 32}; }
 Rectangle GameScreen::altButtonRect() const { return {ui::screenW() - 10 - 120 - 10 - 60, ui::screenH() - 62, 60, 32}; }
-Rectangle GameScreen::mapButtonRect() const { return {ui::screenW() - 10 - 120 - 10 - 60 - 10 - 70, ui::screenH() - 62, 70, 32}; }
 // Controls: left of Menu (top right)
 Rectangle GameScreen::controlsButtonRect() const { return {ui::screenW() - 110 - 10 - 110, 10, 110, 32}; }
 // Copy / Paste / Delete area: one row above Map / Alt / Blueprints (high
@@ -120,7 +120,7 @@ Rectangle GameScreen::craftButtonRect() const {
 
 bool GameScreen::overHudButtons(Vector2 p) const {
     if (inRect(menuButtonRect(ui::screenW()), p) || inRect(controlsButtonRect(), p) || inRect(blueprintButtonRect(), p) ||
-        inRect(altButtonRect(), p) || inRect(mapButtonRect(), p) || inRect(copyButtonRect(), p) ||
+        inRect(altButtonRect(), p) || inRect(copyButtonRect(), p) ||
         inRect(pasteButtonRect(), p) || inRect(cutButtonRect(), p))
         return true;
     // these sit under the panels: an open panel on top of them wins
@@ -143,14 +143,14 @@ std::string GameScreen::hudButtonTooltip(Vector2 p) const {
         if (inRect(craftButtonRect(), p))
             return craftOpen_ ? "Close handcrafting (F)"
                               : "Handcrafting (F): pick a recipe and press Produce - SPACE toggles auto-craft";
-        if (minimapVisible() && inRect(minimapRect(), p)) return "Minimap - click to open the map view (M)";
+        if (minimapVisible() && inRect(minimapRect(), p))
+            return mapMode() ? "Minimap - click to go back to the normal view (M)" : "Minimap - click to open the map view (M)";
     }
     if (inRect(blueprintButtonRect(), p)) return "Open your blueprints (B)";
     if (inRect(altButtonRect(), p))
         return showOutputs_ ? "Machine outputs and chest contents are shown - click or press Alt to hide them"
                             : "Machine outputs and chest contents are hidden - click or press Alt to show them";
     if (inRect(menuButtonRect(ui::screenW()), p)) return "Game menu (ESC)";
-    if (inRect(mapButtonRect(), p)) return mapMode() ? "Back to the normal view (M)" : "Map view (M)";
     return "";
 }
 
@@ -310,10 +310,6 @@ bool GameScreen::menuBarHandle(const Event& e) {
         else openBlueprintList();
         return true;
     }
-    if (inRect(mapButtonRect(), e.pos)) {
-        toggleMap();
-        return true;
-    }
     if (inRect(altButtonRect(), e.pos)) {
         showOutputs_ = !showOutputs_;
         return true;
@@ -332,10 +328,7 @@ void GameScreen::drawMenuBar() {
     hudButton(pasteButtonRect(), "Paste", bpMode_ == BpMode::Placing);
     drawButton(cutButtonRect(), "Delete area", ui::BTN_DANGER, 18, bpMode_ == BpMode::Cutting);
     if (clipboard_.empty() && bpMode_ != BpMode::Placing) fillRound(pasteButtonRect(), 8, Color{20, 20, 20, 110});
-    if (mapMode())   // can't copy / paste / delete in map view
-        for (Rectangle r : {copyButtonRect(), pasteButtonRect(), cutButtonRect()}) fillRound(r, 8, Color{20, 20, 20, 160});
     hudButton(blueprintButtonRect(), "Blueprints", bpListOpen_);
-    hudButton(mapButtonRect(), "Map", mapMode());
     // Alt: lit up (like an active hotbar slot) while outputs are shown
     Rectangle alt = altButtonRect();
     drawButtonBase(alt, showOutputs_ ? ui::ACTIVE_SLOT : rgba(55, 55, 55));

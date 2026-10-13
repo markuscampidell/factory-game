@@ -61,6 +61,7 @@ GameScreen::GameScreen() {
     cam_.h = float(GetScreenHeight());
     blueprints_ = save::loadBlueprints(&bpBooks_);
     builder_.requireExplored = true;   // no building in chunks you haven't seen yet
+    builder_.blueprintReach = 4;       // blueprints / copies: 9 x 9 chunks around the player
 }
 
 GameScreen::~GameScreen() {
@@ -73,7 +74,7 @@ GameScreen::~GameScreen() {
 // Zooming is smooth: zoomBy / toggleMap only change targetZoom_, and
 // stepZoom (once per frame) glides cam_.zoom towards it.
 
-// M / the Map button: glide into the map view around the player, or back
+// M / the minimap / the zoom gate: glide into the map view around the player, or back
 // to the zoom you had before.
 void GameScreen::toggleMap() {
     bool toMap = targetZoom_ >= MAP_ZOOM;
@@ -84,13 +85,31 @@ void GameScreen::toggleMap() {
 }
 
 // `anchor` is in UI coordinates (mouse / event position)
-// (mouse wheel, + / -). Zooming out stops at the normal view's limit - the
-// map view is only entered with M or the Map button.
+// (mouse wheel, + / -). Zooming stops at the edge of the current view (40%
+// for the normal view, MAP_TOP for the map). Pushing on at that edge fills
+// the zoom gate; ZOOM_GATE_STEPS notches in a row switch views.
+namespace { constexpr float MAP_TOP = MAP_ZOOM / 1.15f; }   // closest map zoom
+
+bool GameScreen::zoomGateActive() const { return zoomGate_ > 0 && GetTime() - zoomGateLast_ <= ZOOM_GATE_TIME; }
+
 void GameScreen::zoomBy(float factor, Vector2 anchor) {
-    float target = targetZoom_ * factor;
-    if (targetZoom_ >= MAP_ZOOM) target = std::max(target, MAP_ZOOM);
-    if (target == targetZoom_) return;
-    setZoomTarget(target, anchor);
+    bool inMap = targetZoom_ < MAP_ZOOM;
+    int dir = inMap ? (factor > 1 ? -1 : 0) : (factor < 1 ? 1 : 0);   // pushing towards the other view?
+    float lo = inMap ? MIN_ZOOM : MAP_ZOOM, hi = inMap ? MAP_TOP : MAX_ZOOM;
+    float target = std::clamp(targetZoom_ * factor, lo, hi);
+    bool atEdge = std::fabs(target - targetZoom_) < 1e-4f;
+    if (dir != 0 && atEdge) {
+        if (!zoomGateActive() || zoomGateDir_ != dir) zoomGate_ = 0;   // a new run
+        zoomGateDir_ = dir;
+        zoomGateLast_ = GetTime();
+        if (++zoomGate_ >= ZOOM_GATE_STEPS) {
+            zoomGate_ = 0;
+            toggleMap();
+        }
+        return;
+    }
+    zoomGate_ = 0;   // zoomed normally / the other way: the run is over
+    if (!atEdge) setZoomTarget(target, anchor);
 }
 
 void GameScreen::setZoomTarget(float target, Vector2 anchor) {
@@ -124,13 +143,13 @@ void GameScreen::stepZoom(float dt) {
     if (!mapMode() && !zoomToPlayer_) cam_.keepVisible(player_.rect);
 }
 
-// Leaving the normal view: stop any build/delete action. Nothing is half
-// done at this point - every placement/deletion is all-or-nothing and only
-// happens on a click, so no items can be lost by switching.
+// Leaving the normal view: stop building / deleting single things. Copy,
+// paste, area delete and blueprints (bpMode_) keep going - they work in the
+// map view too. Nothing is half done at this point - every placement /
+// deletion is all-or-nothing and only happens on a click, so no items can be
+// lost by switching.
 void GameScreen::enterMapMode() {
-    bpMode_ = BpMode::None;
-    bpDragging_ = false;
-    mode_ = BuildMode::None;
+    if (bpMode_ == BpMode::None) mode_ = BuildMode::None;
     placingBelt_ = false;
     lastDragged_.reset();
     dragPlaced_.clear();
@@ -138,9 +157,7 @@ void GameScreen::enterMapMode() {
     // panels about things in the world close (a machine / storage panel
     // together with its inventory); inventory / crafting / blueprints stay
     if (machinePanel_ >= 0 || storagePanel_ >= 0 || beltPanel_ >= 0 || splitterPanel_ >= 0) closeAllPanels();
-    // the blueprint list stays open (Use / + Add just say "Zoom in ...")
-    bpSaveOpen_ = false;
-    bpNameInput_.reset();
+    // the blueprint list and the Save blueprint dialog stay open
 }
 
 void GameScreen::newGame(const std::string& name) {
