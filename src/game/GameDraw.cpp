@@ -2,6 +2,8 @@
 #include "GameScreen.hpp"
 #include "Assets.hpp"
 #include <algorithm>
+#include <cstdio>
+#include <ctime>
 #include <unordered_set>
 
 namespace {
@@ -73,6 +75,7 @@ void GameScreen::draw() {
     ui::begin();   // ---- everything below is UI (scaled down in small windows) ----
     drawFloatTexts(dt);
 
+    drawMarkers();
     drawMinimap();
     drawEdgeButtons();     // under the panels
     drawMachinePanel();
@@ -91,9 +94,18 @@ void GameScreen::draw() {
     text("Satis Factorio Program", 10, 10, 20, hud);
     text("Player position: x:" + std::to_string(int(player_.rect.cx())) + " y:" + std::to_string(int(player_.rect.cy())), 10, 35, 20, hud);
     text("FPS: " + std::to_string(int(fps_)), 10, 60, 20, hud);
-    text("Zoom: " + std::to_string(int(std::lround(cam_.zoom * 100))) + "%" + (mapMode() ? "  (map view)" : ""), 10, 85, 20, hud);
+    text("Zoom: " + std::to_string(int(std::lround(cam_.zoom * 100))) + "%" + (mapMode() ? "  (map view - P: place a marker)" : ""), 10, 85, 20, hud);
 
+    if (markerPlacing_) {   // the marker you hold, and how to place it
+        Vector2 m = ui::mouse();
+        drawMarkerPin({m.x, m.y - 2}, 16, false, "");
+        std::string hint = "Left click: place the marker here    Right click / ESC: cancel";
+        Rectangle h = centeredRect(ui::screenW() / 2, 120, measure(hint, 16).x + 24, 28);
+        fillRound(h, 10, ui::PANEL_BG);
+        textCentered(hint, h.x + h.width / 2, h.y + 14, 16, ui::TEXT);
+    }
     drawZoomGate();
+    drawClock();
     drawHudTooltips();
     drawModals(dt);
     // notifications on top of everything ("Saved as ..." over the Game Menu)
@@ -198,8 +210,8 @@ void drawBlueprintMap(const Blueprint& bp, Rectangle sq) {
     for (const BlueprintBelt& b : bp.belts)
         DrawRectangleRec({x0 + float(b.off.x) * tile, y0 + float(b.off.y) * tile, tile, tile}, beltColor);
     for (const BlueprintMachine& m : bp.machines) {
-        const MachineSpec& spec = machineSpec(m.type);
-        DrawRectangleRec({x0 + float(m.off.x) * tile, y0 + float(m.off.y) * tile, float(spec.w) * tile, float(spec.h) * tile},
+        Vec2i sz = machineSize(m.type, m.dir);
+        DrawRectangleRec({x0 + float(m.off.x) * tile, y0 + float(m.off.y) * tile, float(sz.x) * tile, float(sz.y) * tile},
                          machineMapColor(m.type));
     }
 }
@@ -307,6 +319,11 @@ void GameScreen::drawMinimap() {
             }
         }
 
+    // map markers
+    for (const MapMarker& mk : markers_) {
+        Vector2 p{mx(float(mk.tile.x * CELL_SIZE + CELL_SIZE / 2)), my(float(mk.tile.y * CELL_SIZE + CELL_SIZE / 2))};
+        if (inRect(r, p)) drawMarkerPin(p, 8, false, mk.name);
+    }
     // the player, always in the middle
     DrawRectangleRec(centeredRect(r.x + r.width / 2, r.y + r.height / 2, 6, 6), hex("#5F2D5D"));
     DrawRectangleLinesEx(centeredRect(r.x + r.width / 2, r.y + r.height / 2, 6, 6), 1, WHITE);
@@ -373,10 +390,7 @@ void GameScreen::drawMachines() {
             const Machine& m = world_.machine(id);
             Vector2 p = toScreen(float(m.pos.x * CELL_SIZE), float(m.pos.y * CELL_SIZE));
             Rectangle dest{p.x, p.y, float(m.w * CELL_SIZE), float(m.h * CELL_SIZE)};
-            if (const Texture2D* tex = assets::machine(m.type))
-                drawTexture(*tex, dest, WHITE, m.isSplitter() ? 90.0f * float(int(m.dir)) : 0.0f);
-            else
-                fillRound(dest, 4, rgba(120, 120, 140));
+            assets::drawMachine(m.type, m.dir, dest);
             float cx = dest.x + dest.width / 2, cy = dest.y + dest.height / 2;
 
             if (m.isProducing() && m.recipe && !m.recipe->outputs.empty()) {
@@ -442,7 +456,7 @@ void GameScreen::drawGhostBelt(Vec2i tile, uint8_t mask, Dir out, Color overlay,
 void GameScreen::drawBuildMode() {
     if (bpMode_ != BpMode::None) { drawBlueprintMode(); return; }
     if (mode_ == BuildMode::Building) {
-        if (selected_ == Buildable::Belt) drawGhostBelts();
+        if (selected_ == Buildable::Belt) { drawOutputArrows(); drawGhostBelts(); }
         else drawGhostMachine();
     } else if (mode_ == BuildMode::Deleting) {
         drawDeleteGhost();
@@ -451,9 +465,10 @@ void GameScreen::drawBuildMode() {
 
 void GameScreen::drawGhostMachine() {
     MachineType type = toMachine(selected_);
-    const MachineSpec& spec = machineSpec(type);
+    Dir dir = Dir(splitterRot_);   // splitters: 4 directions, a miner: standing / lying
+    Vec2i size = machineSize(type, dir);
     Vec2i mt = mouseTile();
-    Vec2i tl = Builder::machineTopLeft(type, mt);
+    Vec2i tl = Builder::machineTopLeft(type, mt, dir);
     PlaceStatus st = builder_.checkMachine(type, mt, Dir(splitterRot_), shiftDown());
 
     // Splitter: show how neighbouring belts would connect
@@ -472,9 +487,8 @@ void GameScreen::drawGhostMachine() {
     }
 
     Vector2 p = toScreen(float(tl.x * CELL_SIZE), float(tl.y * CELL_SIZE));
-    Rectangle dest{p.x, p.y, float(spec.w * CELL_SIZE), float(spec.h * CELL_SIZE)};
-    if (const Texture2D* tex = assets::machine(type))
-        drawTexture(*tex, dest, Color{255, 255, 255, 120}, type == MachineType::Splitter ? 90.0f * float(splitterRot_) : 0.0f);
+    Rectangle dest{p.x, p.y, float(size.x * CELL_SIZE), float(size.y * CELL_SIZE)};
+    assets::drawMachine(type, dir, dest, Color{255, 255, 255, 120});
     // Alt mode: what the new machine will make (its default recipe)
     if (showOutputs_) {
         auto preview = makeMachine(type, tl, Dir(splitterRot_));
@@ -617,6 +631,19 @@ void GameScreen::drawHandMining() {
     DrawRectangleRec({bar.x, bar.y, bar.width * p, bar.height}, Color{0, 230, 0, 255});
 }
 
+// Top right, under Menu / Controls: time played in this game and the clock.
+void GameScreen::drawClock() {
+    long t = long(playSeconds_);
+    char played[48];
+    std::snprintf(played, sizeof played, "Played: %ld:%02ld:%02ld", t / 3600, (t / 60) % 60, t % 60);
+    std::time_t now = std::time(nullptr);
+    char clock[32] = "";
+    if (std::tm* lt = std::localtime(&now)) std::strftime(clock, sizeof clock, "Time: %H:%M", lt);
+    Color c = mapMode() ? WHITE : BLACK;   // like the text top left
+    textTopRight(played, ui::screenW() - 10, 50, 18, c);
+    textTopRight(clock, ui::screenW() - 10, 72, 18, c);
+}
+
 // The zoom gate's progress: a box in the middle of the screen.
 void GameScreen::drawZoomGate() {
     if (!zoomGateActive()) { zoomGateShown_ = 0; return; }
@@ -658,3 +685,91 @@ void GameScreen::drawFloatTexts(float dt) {
         textCentered(f.text, sx, sy, 18, Color{f.color.r, f.color.g, f.color.b, a}, true);
     }
 }
+
+// ---------------------------------------------------------------------------
+// While holding a belt: on every side tile of the machines near the mouse a
+// double arrow shows that a belt there can go in or out. Where a belt is
+// already placed, only the matching arrow is left: green "out" (the belt
+// points away - the machine pushes onto it) or blue "in" (the belt points
+// into the machine and feeds it). A belt running along the side gets none.
+// ---------------------------------------------------------------------------
+void GameScreen::drawOutputArrows() {
+    const int R = 12;   // tiles around the mouse
+    Vec2i mt = mouseTile();
+    std::unordered_set<int> seen;
+    // a small triangle centred at (cx, cy) pointing along v
+    auto arrow = [](float cx, float cy, Vector2 v, Color c) {
+        Vector2 side{-v.y, v.x};
+        const float len = CELL_SIZE * 0.13f, wid = CELL_SIZE * 0.16f;
+        Vector2 tip{cx + v.x * len, cy + v.y * len};
+        Vector2 a{cx - v.x * len + side.x * wid, cy - v.y * len + side.y * wid};
+        Vector2 b{cx - v.x * len - side.x * wid, cy - v.y * len - side.y * wid};
+        DrawTriangle(tip, a, b, c);   // raylib wants one winding; drawing both ways round
+        DrawTriangle(tip, b, a, c);   // keeps it simple
+    };
+    const Color both{255, 255, 255, 140}, out{90, 230, 110, 220}, in{90, 170, 255, 220};
+    for (int y = mt.y - R; y <= mt.y + R; ++y)
+        for (int x = mt.x - R; x <= mt.x + R; ++x) {
+            int id = world_.machineIdAt({x, y});
+            if (id < 0 || !seen.insert(id).second) continue;
+            const Machine& m = world_.machine(id);
+            if (m.isSplitter()) continue;
+            for (const OutputTile& ot : machineOutputTiles(m)) {
+                TileRef r = world_.refAt(ot.tile);
+                if (r < 0) continue;   // another machine there
+                float cx = float(ot.tile.x * CELL_SIZE + CELL_SIZE / 2), cy = float(ot.tile.y * CELL_SIZE + CELL_SIZE / 2);
+                Vector2 v{float(dirVec(ot.dir).x), float(dirVec(ot.dir).y)};   // away from the machine
+                const float off = CELL_SIZE * 0.2f;
+                if (r == 0) {   // free: in or out
+                    arrow(cx + v.x * off, cy + v.y * off, v, both);
+                    arrow(cx - v.x * off, cy - v.y * off, {-v.x, -v.y}, both);
+                    continue;
+                }
+                Dir bd = world_.belt(r - 1).dir;
+                if (bd == ot.dir) arrow(cx, cy, v, out);
+                else if (bd == opposite(ot.dir)) arrow(cx, cy, {-v.x, -v.y}, in);
+            }
+        }
+}
+
+// ---------------------------------------------------------------------------
+// Map markers: a pin + name, the same size on screen at any zoom
+// ---------------------------------------------------------------------------
+Vector2 GameScreen::worldToUi(float wx, float wy) const {
+    return {(wx - cam_.x) * cam_.zoom / ui::scale(), (wy - cam_.y) * cam_.zoom / ui::scale()};
+}
+
+void GameScreen::drawMarkerPin(Vector2 at, float size, bool label, const std::string& name) {
+    // a round head on a short point; `at` is the tip
+    const Color pin{255, 120, 40, 255};
+    float r = size / 2;
+    Vector2 head{at.x, at.y - size * 1.1f};
+    DrawTriangle({head.x - r * 0.7f, head.y + r * 0.4f}, at, {head.x + r * 0.7f, head.y + r * 0.4f}, pin);
+    DrawTriangle({head.x + r * 0.7f, head.y + r * 0.4f}, at, {head.x - r * 0.7f, head.y + r * 0.4f}, pin);
+    DrawCircleV(head, r, pin);
+    DrawCircleV(head, r * 0.4f, WHITE);
+    if (!label) return;
+    Vector2 m = measure(name, 16, true);
+    Rectangle bg{head.x - m.x / 2 - 6, head.y - r - m.y - 8, m.x + 12, m.y + 6};
+    fillRound(bg, 6, Color{20, 20, 20, 180});
+    text(name, bg.x + 6, bg.y + 3, 16, WHITE, true);
+}
+
+void GameScreen::drawMarkers() {
+    for (const MapMarker& mk : markers_) {
+        Vector2 p = worldToUi(float(mk.tile.x * CELL_SIZE + CELL_SIZE / 2), float(mk.tile.y * CELL_SIZE + CELL_SIZE / 2));
+        if (p.x < -200 || p.y < -60 || p.x > ui::screenW() + 200 || p.y > ui::screenH() + 60) continue;
+        drawMarkerPin(p, 16, mapMode(), mk.name);   // names in the map view; normal view: hover shows it
+    }
+}
+
+int GameScreen::markerAt(Vector2 sp) const {
+    for (size_t i = markers_.size(); i-- > 0;) {
+        const MapMarker& mk = markers_[i];
+        Vector2 p = worldToUi(float(mk.tile.x * CELL_SIZE + CELL_SIZE / 2), float(mk.tile.y * CELL_SIZE + CELL_SIZE / 2));
+        Rectangle hit{p.x - 10, p.y - 28, 20, 30};
+        if (inRect(hit, sp)) return int(i);
+    }
+    return -1;
+}
+

@@ -83,13 +83,28 @@ const std::vector<const Recipe*>* Machine::recipeChoices() const {
     return nullptr;
 }
 
+Dir normalizeMachineDir(MachineType t, Dir d) {
+    if (t == MachineType::Splitter) return d;
+    const MachineSpec& s = machineSpec(t);
+    if (s.w == s.h) return Dir::Right;
+    return (d == Dir::Down || d == Dir::Up) ? Dir::Down : Dir::Right;
+}
+
+bool machineTurnable(MachineType t) { return t == MachineType::Splitter || machineSpec(t).w != machineSpec(t).h; }
+
+Vec2i machineSize(MachineType t, Dir d) {
+    const MachineSpec& s = machineSpec(t);
+    return normalizeMachineDir(t, d) == Dir::Down && t != MachineType::Splitter ? Vec2i{s.h, s.w} : Vec2i{s.w, s.h};
+}
+
 std::unique_ptr<Machine> makeMachine(MachineType type, Vec2i topLeft, Dir dir, ItemId ore) {
     auto m = std::make_unique<Machine>();
-    const MachineSpec& s = machineSpec(type);
+    dir = normalizeMachineDir(type, dir);
+    Vec2i size = machineSize(type, dir);
     m->type = type;
     m->pos = topLeft;
-    m->w = s.w;
-    m->h = s.h;
+    m->w = size.x;
+    m->h = size.y;
     m->dir = dir;
     if (type == MachineType::Smelter) m->recipe = smelterRecipes().front();
     if (type == MachineType::Assembler) m->recipe = assemblerRecipes().front();
@@ -132,6 +147,7 @@ void World::clear() {
     freeMachines_.clear();
     topologyDirty_ = true;
     tickCount_ = 0;
+    record_ = {};
     terrain::clearCache();
 }
 
@@ -187,6 +203,54 @@ uint8_t World::tileType(Vec2i t) {
 ItemId World::oreAt(Vec2i t) { return terrain::oreForTileType(tileType(t)); }
 
 // ---------------------------------------------------------------------------
+// Undo recording
+// ---------------------------------------------------------------------------
+static ObjSnap beltSnap(const Belt& b) {
+    ObjSnap s;
+    s.belt = true;
+    s.pos = b.pos;
+    s.beltState = b;
+    return s;
+}
+static ObjSnap machineSnap(const Machine& m) {
+    ObjSnap s;
+    s.pos = m.pos;
+    s.type = m.type;
+    s.machine = std::make_shared<Machine>(m);
+    return s;
+}
+
+// Something that was added earlier in the same record and is removed again
+// cancels out; otherwise its old state is kept.
+void World::recordRemoved(ObjSnap snap) {
+    for (size_t i = 0; i < record_.added.size(); ++i)
+        if (record_.added[i].sameObject(snap)) { record_.added.erase(record_.added.begin() + long(i)); return; }
+    record_.removed.push_back(std::move(snap));
+}
+
+void World::recordAdded(ObjSnap key) {
+    key.machine.reset();
+    key.beltState = Belt{};
+    record_.added.push_back(std::move(key));
+}
+
+void World::noteChangedBelt(int id) {
+    if (!recordChanges) return;
+    ObjSnap s = beltSnap(belts_[size_t(id)]);
+    for (auto& a : record_.added) if (a.sameObject(s)) return;   // new in this record anyway
+    record_.removed.push_back(s);
+    recordAdded(s);
+}
+
+void World::noteChangedMachine(int id) {
+    if (!recordChanges || !machineAlive(id)) return;
+    ObjSnap s = machineSnap(*machines_[size_t(id)]);
+    for (auto& a : record_.added) if (a.sameObject(s)) return;
+    record_.removed.push_back(s);
+    recordAdded(s);
+}
+
+// ---------------------------------------------------------------------------
 // Belts & machines
 // ---------------------------------------------------------------------------
 int World::addBelt(Vec2i pos, Dir dir) {
@@ -201,12 +265,14 @@ int World::addBelt(Vec2i pos, Dir dir) {
     b.itemFrom = dir;
     setRef(pos, TileRef(id + 1));
     topologyDirty_ = true;
+    if (recordChanges) recordAdded(beltSnap(b));
     return id;
 }
 
 void World::removeBelt(int id) {
     Belt& b = belts_[size_t(id)];
     if (!b.alive) return;
+    if (recordChanges) recordRemoved(beltSnap(b));
     setRef(b.pos, 0);
     b = Belt{};
     freeBelts_.push_back(id);
@@ -225,12 +291,19 @@ int World::addMachine(std::unique_ptr<Machine> m) {
     if (m->type == MachineType::Miner) m->recipe = &m->minerRecipe;
     machines_[size_t(id)] = std::move(m);
     topologyDirty_ = true;
+    if (recordChanges) {
+        ObjSnap key;
+        key.pos = machines_[size_t(id)]->pos;
+        key.type = machines_[size_t(id)]->type;
+        recordAdded(key);
+    }
     return id;
 }
 
 void World::removeMachine(int id) {
     if (!machineAlive(id)) return;
     Machine& m = *machines_[size_t(id)];
+    if (recordChanges) recordRemoved(machineSnap(m));
     for (int dy = 0; dy < m.h; ++dy)
         for (int dx = 0; dx < m.w; ++dx)
             setRef({m.pos.x + dx, m.pos.y + dy}, 0);

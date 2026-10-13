@@ -22,15 +22,73 @@ void Blueprint::computeMasks() {
     std::vector<int> ids;
     for (auto& b : belts) ids.push_back(tmp.addBelt(b.off, b.dir));
     for (auto& m : machines) {
-        const MachineSpec& s = machineSpec(m.type);
+        Vec2i s = machineSize(m.type, m.dir);
         bool free = true;
-        for (int dy = 0; dy < s.h && free; ++dy)
-            for (int dx = 0; dx < s.w && free; ++dx)
+        for (int dy = 0; dy < s.y && free; ++dy)
+            for (int dx = 0; dx < s.x && free; ++dx)
                 if (tmp.isCellBlocked({m.off.x + dx, m.off.y + dy})) free = false;
         if (free) tmp.addMachine(makeMachine(m.type, m.off, m.dir, itemByStringId("iron_ore")));
     }
     tmp.ensureTopology();
     for (size_t i = 0; i < belts.size(); ++i) belts[i].mask = tmp.belt(ids[i]).incomingMask;
+}
+
+// Shifts everything so the smallest offset is 0 and recomputes w / h.
+static void normalize(Blueprint& bp) {
+    int x0 = INT_MAX, y0 = INT_MAX, x1 = INT_MIN, y1 = INT_MIN;
+    auto grow = [&](Vec2i p, int w, int h) {
+        x0 = std::min(x0, p.x); y0 = std::min(y0, p.y);
+        x1 = std::max(x1, p.x + w - 1); y1 = std::max(y1, p.y + h - 1);
+    };
+    for (auto& b : bp.belts) grow(b.off, 1, 1);
+    for (auto& m : bp.machines) grow(m.off, machineSize(m.type, m.dir).x, machineSize(m.type, m.dir).y);
+    if (x0 == INT_MAX) { bp.w = bp.h = 0; return; }
+    for (auto& b : bp.belts) b.off = b.off - Vec2i{x0, y0};
+    for (auto& m : bp.machines) m.off = m.off - Vec2i{x0, y0};
+    bp.w = x1 - x0 + 1;
+    bp.h = y1 - y0 + 1;
+}
+
+Blueprint rotatedCW(const Blueprint& src, int turns) {
+    turns = floorMod(turns, 4);
+    Blueprint bp = src;
+    for (int t = 0; t < turns; ++t) {
+        Blueprint out = bp;
+        const int H = bp.h;
+        // tile (x, y) -> (H - 1 - y, x)
+        for (auto& b : out.belts) {
+            b.off = {H - 1 - b.off.y, b.off.x};
+            b.dir = rotateCW(b.dir, 1);
+        }
+        for (auto& m : out.machines) {
+            // footprint w x h at (x, y) -> h x w at (H - y - h, x); a miner
+            // simply lies down / stands up
+            Vec2i s = machineSize(m.type, m.dir);
+            m.off = {H - m.off.y - s.y, m.off.x};
+            m.dir = normalizeMachineDir(m.type, rotateCW(m.dir, 1));
+        }
+        normalize(out);
+        bp = out;
+    }
+    bp.computeMasks();
+    return bp;
+}
+
+Blueprint mirrored(const Blueprint& src) {
+    Blueprint bp = src;
+    auto flip = [](Dir d) { return d == Dir::Left ? Dir::Right : d == Dir::Right ? Dir::Left : d; };
+    for (auto& b : bp.belts) {
+        b.off.x = src.w - 1 - b.off.x;
+        b.dir = flip(b.dir);
+    }
+    for (auto& m : bp.machines) {
+        m.off.x = src.w - m.off.x - machineSize(m.type, m.dir).x;
+        m.dir = flip(m.dir);
+        if (m.type == MachineType::Splitter) std::swap(m.sideFilters[0], m.sideFilters[2]);   // left <-> right
+    }
+    normalize(bp);
+    bp.computeMasks();
+    return bp;
 }
 
 Selection makeSelection(Vec2i start, Vec2i end) {

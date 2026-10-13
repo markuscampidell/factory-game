@@ -7,7 +7,7 @@
 #include <vector>
 
 struct MenuAction {
-    enum Kind { None, NewGame, LoadGame, Quit } kind = None;
+    enum Kind { None, NewGame, LoadGame, LoadAutosave, Quit } kind = None;   // LoadAutosave: name = the normal save
     std::string name;
 };
 
@@ -35,6 +35,7 @@ private:
     void clearModal();
 
     std::vector<std::string> saves_;
+    std::vector<double> playTimes_;   // per save, read in refresh()
     std::string lastOpened_;
 
     std::optional<TextInput> nameInput_;
@@ -47,7 +48,7 @@ private:
     std::vector<std::pair<std::string, Rectangle>> rootButtons_;
     Rectangle startRect_{}, backRect_{}, loadBackRect_{};
     Rectangle newGamePanel_{}, renamePanel_{}, renameOkRect_{}, renameCancelRect_{};
-    struct Row { Rectangle name, edit, del; std::string save; };
+    struct Row { Rectangle name, edit, del, autosave; std::string save; };   // autosave: width 0 = none newer
     std::vector<Row> rows_;
     Rectangle viewport_{};
     float contentHeight_ = 0, scroll_ = 0;

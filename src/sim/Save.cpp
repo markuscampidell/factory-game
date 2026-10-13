@@ -167,6 +167,7 @@ json machineToJson(const Machine& m) {
         j["processing"] = m.processing;          // C++ extra
         j["process_ticks"] = m.timer;            // C++ extra
         if (m.type == MachineType::Miner) j["ore_item_id"] = itemDef(m.oreItem).id;
+        if (machineTurnable(m.type)) j["direction"] = dirToJson(m.dir);   // C++ extra (miner lying on its side)
     } else if (m.isStorage()) {
         j["slots"] = slotsToJson(m.storage);
     } else if (m.isSplitter()) {
@@ -192,7 +193,9 @@ std::unique_ptr<Machine> machineFromJson(const json& j, ItemAmounts& lost) {
     if (type == MachineType::Miner) {
         ItemId ore = itemByStringId(j.value("ore_item_id", std::string()));
         if (ore == NO_ITEM) ore = itemByStringId("iron_ore");
-        m = makeMachine(type, pos, Dir::Right, ore);
+        Dir d = Dir::Right;
+        if (j.contains("direction")) dirFromJson(j["direction"], d);
+        m = makeMachine(type, pos, d, ore);
     } else if (type == MachineType::Splitter) {
         Dir d = Dir::Right;
         if (j.contains("direction")) dirFromJson(j["direction"], d);
@@ -299,9 +302,36 @@ std::vector<std::string> listSaves() {
     return out;
 }
 
+std::string autosaveName(const std::string& name) { return name + "-autosave"; }
+
+bool isAutosave(const std::string& name) {
+    const std::string suffix = "-autosave";
+    return name.size() > suffix.size() && name.compare(name.size() - suffix.size(), suffix.size(), suffix) == 0;
+}
+
+bool hasNewerAutosave(const std::string& name) {
+    if (isAutosave(name) || !exists(name) || !exists(autosaveName(name))) return false;
+    std::error_code e1, e2;
+    auto tSave = fs::last_write_time(pathFor(name), e1), tAuto = fs::last_write_time(pathFor(autosaveName(name)), e2);
+    return !e1 && !e2 && tAuto > tSave;
+}
+
+double readPlayTime(const std::string& name) {
+    std::ifstream f(pathFor(name));
+    if (!f) return -1;
+    try {
+        json data;
+        f >> data;
+        return std::max(0.0, data.value("play_time", 0.0));
+    } catch (const std::exception&) {
+        return -1;
+    }
+}
+
 void remove(const std::string& name) {
     std::error_code ec;
     fs::remove(pathFor(name), ec);
+    if (!isAutosave(name)) fs::remove(pathFor(autosaveName(name)), ec);
     persist();
 }
 
@@ -310,6 +340,11 @@ bool rename(const std::string& oldName, const std::string& newName) {
     std::error_code ec;
     fs::rename(pathFor(oldName), pathFor(newName), ec);
     if (ec) return false;
+    if (!isAutosave(oldName) && !isAutosave(newName)) {   // the autosave goes along
+        std::error_code ec2;
+        fs::remove(pathFor(autosaveName(newName)), ec2);
+        if (fs::exists(pathFor(autosaveName(oldName)), ec2)) fs::rename(pathFor(autosaveName(oldName)), pathFor(autosaveName(newName)), ec2);
+    }
     if (wasLast) setLastOpened(newName);
     persist();
     return true;
@@ -338,6 +373,10 @@ bool saveGame(const World& w, const Player& p, const CameraState& cam, const std
     data["version"] = SAVE_VERSION;
     data["player"] = {{"x", p.rect.cx()}, {"y", p.rect.cy()}, {"inventory", slotsToJson(p.inventory)}};
     data["camera"] = {{"x", cam.x}, {"y", cam.y}, {"zoom", cam.zoom}, {"show_outputs", cam.showOutputs}};
+    json markers = json::array();
+    for (const MapMarker& m : cam.markers) markers.push_back({{"x", m.tile.x}, {"y", m.tile.y}, {"name", m.name}});
+    data["markers"] = markers;
+    data["play_time"] = cam.playSeconds;
     data["seed"] = w.seed;
     json belts = json::array();
     for (const Belt& b : w.belts()) {
@@ -408,6 +447,9 @@ bool loadGame(World& w, Player& p, CameraState& cam, const std::string& name, st
             cam.showOutputs = data["camera"].value("show_outputs", true);
             cam.valid = true;
         }
+        cam.playSeconds = std::max(0.0, data.value("play_time", 0.0));
+        for (const json& jm : data.value("markers", json::array()))
+            if (jm.is_object()) cam.markers.push_back({{jm.value("x", 0), jm.value("y", 0)}, jm.value("name", std::string("Marker"))});
 
         if (data.contains("explored_chunks") && data["explored_chunks"].is_array())
             for (const json& c : data["explored_chunks"])

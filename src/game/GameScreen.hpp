@@ -80,7 +80,8 @@ public:
     GameScreen& operator=(const GameScreen&) = delete;
 
     void newGame(const std::string& name);
-    bool loadGame(const std::string& name, std::string* error);
+    // fromAutosave: load "name-autosave" but keep playing as "name"
+    bool loadGame(const std::string& name, std::string* error, bool fromAutosave = false);
 
     void handle(const Event& e);
     void update(float dt);   // runs fixed ticks + per-frame logic
@@ -424,6 +425,60 @@ private:
     // Only the type and direction; recipe and filters stay at their defaults.
     // Not the Ctrl+C clipboard.
     bool pipetteClick(const Event& e);
+
+    // ---- undo (Ctrl + Z) ----
+    // world_ records every change; once the left mouse button is up, what
+    // was recorded becomes one undo step (a whole drag, a belt line, a paste
+    // or an area delete). Builder::undo makes it item-exact.
+    std::vector<UndoRecord> undoStack_;
+    std::vector<UndoRecord> redoStack_;   // filled by undo, emptied by any new action
+    static constexpr size_t UNDO_MAX = 50;
+    void commitUndo();
+    void undoLast();                      // Ctrl + Z (Ctrl + Y on German keyboards: same key)
+    void redoLast();                      // Ctrl + R
+    // shared by undo and redo: takes back `from.back()` and moves the
+    // record that reverses it onto `to`
+    void applyUndo(std::vector<UndoRecord>& from, std::vector<UndoRecord>& to, const char* verb);
+
+    // ---- map markers (P, or the "Add map marker" button) ----
+    std::vector<MapMarker> markers_;
+    bool markerPlacing_ = false;       // holding a marker: left click places it
+    Rectangle markerButtonRect() const;
+    bool markerPlacingHandle(const Event& e);
+    bool markerDialogOpen_ = false;
+    int markerEdit_ = -1;              // index being renamed, -1 = new marker
+    Vec2i markerTile_;
+    std::optional<TextInput> markerNameInput_;
+    Rectangle markerDialogRect() const;
+    void openMarkerDialog(Vec2i tile, int editIndex);
+    void submitMarkerDialog();
+    bool markerDialogHandle(const Event& e);
+    void drawMarkerDialog();
+    int markerAt(Vector2 screenPos) const;    // index of the marker under the mouse, -1 if none
+    Vector2 worldToUi(float wx, float wy) const;
+    void drawMarkers();                // pins in the world / map view
+    void drawMarkerPin(Vector2 at, float size, bool label, const std::string& name);
+
+    // ---- search boxes ----
+    SearchBox craftSearch_, pickerSearch_, bpSearch_, machineSearch_;
+    SearchBox* focusedSearch();
+    std::vector<int> craftVisibleRecipes() const;   // indices into handcraftRecipes()
+    std::vector<ItemId> pickerItems() const;
+    Rectangle craftSearchRect() const;
+    Rectangle craftListViewport() const;
+
+    // ---- time played (saved) and the real clock, top right under Menu ----
+    double playSeconds_ = 0;
+    void drawClock();
+
+    // ---- autosave (every AUTOSAVE_SECONDS of play into "<name>-autosave") ----
+    static constexpr float AUTOSAVE_SECONDS = 300;
+    float autosaveTimer_ = 0;
+    std::string autosaveName() const;
+
+    // ---- small hints ----
+    void drawPlacementHints();         // ghost colour reason, rotate / delete hints
+    void drawOutputArrows();           // while holding a belt: where machines push
 
     // ---- notifications ----
     std::string toast_;

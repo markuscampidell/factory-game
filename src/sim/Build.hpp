@@ -95,7 +95,7 @@ public:
     std::vector<int> executePlacement(const std::vector<PlaceRequest>& reqs, const PlacePlan& plan);
 
     // ---- machines ----
-    static Vec2i machineTopLeft(MachineType t, Vec2i mouseTile);
+    static Vec2i machineTopLeft(MachineType t, Vec2i mouseTile, Dir d = Dir::Right);
     PlaceStatus checkMachine(MachineType t, Vec2i mouseTile, Dir dir, bool allowReplace, ItemAmounts* cost = nullptr) const;
     // Returns the new machine id, or -1. `protectedIds` are never replaced.
     int placeMachine(MachineType t, Vec2i mouseTile, Dir dir, bool allowReplace, const std::set<int>* protectedIds,
@@ -130,6 +130,15 @@ public:
     // All or nothing: needs free tiles (or identical objects, or Shift),
     // ore under new miners and the full cost.
     bool placeBlueprint(const Blueprint& bp, Vec2i topLeft, bool allowReplace = false, ItemAmounts* delta = nullptr);
+
+    // ---- undo (Ctrl+Z) ----
+    // Takes back one recorded action (World::recordChanges): removes what it
+    // added (refunding them with their contents) and puts back what it
+    // removed or changed, with the contents they had (paying for them).
+    // All or nothing - never creates or loses items.
+    enum class UndoResult { Ok, Nothing, Changed, Blocked, PlayerInTheWay, NoFunds, NoSpace };
+    // `inverse` gets the record that takes this undo back again (redo).
+    UndoResult undo(const UndoRecord& rec, ItemAmounts* delta = nullptr, UndoRecord* inverse = nullptr);
 
     // ---- deleting everything in a rectangle (Ctrl+X) ----
     enum class AreaDelete { Ok, Nothing, NoSpace };

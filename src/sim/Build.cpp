@@ -80,11 +80,11 @@ static const Recipe* recipeChange(const Machine& m, const PlaceRequest& r) {
     return (want && want != m.recipe && m.type != MachineType::Miner) ? want : nullptr;
 }
 
-static ItemId firstOre(World& w, MachineType t, Vec2i tl) {
-    const MachineSpec& s = machineSpec(t);
+static ItemId firstOre(World& w, MachineType t, Vec2i tl, Dir d) {
+    Vec2i s = machineSize(t, d);
     ItemId ore = NO_ITEM;
-    for (int dy = 0; dy < s.h && ore == NO_ITEM; ++dy)   // row by row (same order as Python)
-        for (int dx = 0; dx < s.w && ore == NO_ITEM; ++dx) ore = w.oreAt({tl.x + dx, tl.y + dy});
+    for (int dy = 0; dy < s.y && ore == NO_ITEM; ++dy)   // row by row (same order as Python)
+        for (int dx = 0; dx < s.x && ore == NO_ITEM; ++dx) ore = w.oreAt({tl.x + dx, tl.y + dy});
     return ore;
 }
 
@@ -119,8 +119,8 @@ PlacePlan Builder::planPlacement(const std::vector<PlaceRequest>& reqs, bool all
         PlaceStatus st = PlaceStatus::Ok;
         int keep = -1;
         if (limitReach && blueprintReach >= 0) {   // before anything that reads the world
-            const MachineSpec& s = machineSpec(r.type);
-            int w = r.belt ? 1 : s.w, h = r.belt ? 1 : s.h;
+            Vec2i sz = machineSize(r.type, r.dir);
+            int w = r.belt ? 1 : sz.x, h = r.belt ? 1 : sz.y;
             if (!inBlueprintReach(r.pos) || !inBlueprintReach(r.pos + Vec2i{w - 1, h - 1})) st = PlaceStatus::OutOfReach;
         }
         if (st == PlaceStatus::OutOfReach) {
@@ -130,8 +130,8 @@ PlacePlan Builder::planPlacement(const std::vector<PlaceRequest>& reqs, bool all
             continue;
         }
         if (requireExplored) {   // checked first: reading ore below would explore the chunk
-            const MachineSpec& s = machineSpec(r.type);
-            int w = r.belt ? 1 : s.w, h = r.belt ? 1 : s.h;
+            Vec2i sz = machineSize(r.type, r.dir);
+            int w = r.belt ? 1 : sz.x, h = r.belt ? 1 : sz.y;
             for (int dy = 0; dy < h && st == PlaceStatus::Ok; ++dy)
                 for (int dx = 0; dx < w && st == PlaceStatus::Ok; ++dx)
                     if (!tileExplored(r.pos + Vec2i{dx, dy})) st = PlaceStatus::Undiscovered;
@@ -156,12 +156,15 @@ PlacePlan Builder::planPlacement(const std::vector<PlaceRequest>& reqs, bool all
             }
         } else {
             const MachineSpec& s = machineSpec(r.type);
-            auto cells = footprint(r.pos, s.w, s.h);
+            Vec2i sz = machineSize(r.type, r.dir);
+            auto cells = footprint(r.pos, sz.x, sz.y);
             std::vector<int> ob, om;
             gatherOccupants(cells, ob, om);
             bool byPlayer = false;
             for (Vec2i c : cells) byPlayer |= isBlockedByPlayer(c);
-            bool same = ob.empty() && om.size() == 1 && world.machine(om[0]).type == r.type && world.machine(om[0]).pos == r.pos;
+            // (a turned miner has another footprint: not the same machine)
+            bool same = ob.empty() && om.size() == 1 && world.machine(om[0]).type == r.type && world.machine(om[0]).pos == r.pos &&
+                        world.machine(om[0]).w == sz.x && world.machine(om[0]).h == sz.y;
             if (byPlayer) st = PlaceStatus::Blocked;
             else if (same && (!world.machine(om[0]).isSplitter() || world.machine(om[0]).dir == r.dir || allowReplace)) {
                 keep = om[0];
@@ -174,7 +177,7 @@ PlacePlan Builder::planPlacement(const std::vector<PlaceRequest>& reqs, bool all
                 else { rmBelts.insert(ob.begin(), ob.end()); rmMachines.insert(om.begin(), om.end()); }
             }
             if (st == PlaceStatus::Ok && keep < 0) {
-                if (r.type == MachineType::Miner && firstOre(w, r.type, r.pos) == NO_ITEM) st = PlaceStatus::NoOre;
+                if (r.type == MachineType::Miner && firstOre(w, r.type, r.pos, r.dir) == NO_ITEM) st = PlaceStatus::NoOre;
                 for (auto& c : s.cost) addAmount(cost, c.first, c.second);
             }
         }
@@ -205,6 +208,22 @@ PlacePlan Builder::planPlacement(const std::vector<PlaceRequest>& reqs, bool all
 std::vector<int> Builder::executePlacement(const std::vector<PlaceRequest>& reqs, const PlacePlan& plan) {
     // 1. everything given back (guaranteed to fit, see planPlacement)
     applyRefunds(player.inventory, plan.removeBelts, plan.removeMachines);
+    // undo: remember the old state of everything that is changed in place
+    auto sameFilter = [](const ItemFilter& a, const ItemFilter& b) { return a.enabled == b.enabled && a.slots == b.slots; };
+    for (size_t i = 0; i < reqs.size(); ++i) {
+        int keep = plan.existing[i];
+        if (keep < 0) continue;
+        const PlaceRequest& r = reqs[i];
+        if (r.belt) {
+            const Belt& b = world.belt(keep);
+            if (b.dir != r.dir || (r.setFilters && !sameFilter(b.filter, r.beltFilter))) world.noteChangedBelt(keep);
+        } else {
+            const Machine& m = world.machine(keep);
+            bool filters = r.setFilters && !(sameFilter(m.sideFilters[0], r.sideFilters[0]) && sameFilter(m.sideFilters[1], r.sideFilters[1]) &&
+                                             sameFilter(m.sideFilters[2], r.sideFilters[2]));
+            if ((m.isSplitter() && m.dir != r.dir) || recipeChange(m, r) || filters) world.noteChangedMachine(keep);
+        }
+    }
     for (size_t i = 0; i < reqs.size(); ++i) {
         if (reqs[i].belt || plan.existing[i] < 0) continue;
         Machine& m = world.machine(plan.existing[i]);
@@ -243,7 +262,7 @@ std::vector<int> Builder::executePlacement(const std::vector<PlaceRequest>& reqs
             }
         } else {
             player.inventory.tryRemoveAll(machineSpec(r.type).cost);
-            auto mach = makeMachine(r.type, r.pos, r.dir, r.type == MachineType::Miner ? firstOre(world, r.type, r.pos) : NO_ITEM);
+            auto mach = makeMachine(r.type, r.pos, r.dir, r.type == MachineType::Miner ? firstOre(world, r.type, r.pos, r.dir) : NO_ITEM);
             if (const Recipe* rc = recipeChoice(*mach, r.recipeId)) { mach->recipe = rc; mach->resetBuffers(); }
             id = world.addMachine(std::move(mach));
         }
@@ -258,16 +277,16 @@ std::vector<int> Builder::executePlacement(const std::vector<PlaceRequest>& reqs
 // ---------------------------------------------------------------------------
 // Machines
 // ---------------------------------------------------------------------------
-Vec2i Builder::machineTopLeft(MachineType t, Vec2i mouseTile) {
-    const MachineSpec& s = machineSpec(t);
-    return {mouseTile.x - s.w / 2, mouseTile.y - s.h / 2};
+Vec2i Builder::machineTopLeft(MachineType t, Vec2i mouseTile, Dir d) {
+    Vec2i s = machineSize(t, d);
+    return {mouseTile.x - s.x / 2, mouseTile.y - s.y / 2};
 }
 
 
 PlaceStatus Builder::checkMachine(MachineType t, Vec2i mouseTile, Dir dir, bool allowReplace, ItemAmounts* cost) const {
     PlaceRequest r;
     r.type = t;
-    r.pos = machineTopLeft(t, mouseTile);
+    r.pos = machineTopLeft(t, mouseTile, dir);
     r.dir = dir;
     PlacePlan plan = planPlacement({r}, allowReplace);
     if (cost) *cost = plan.cost;
@@ -278,7 +297,7 @@ int Builder::placeMachine(MachineType t, Vec2i mouseTile, Dir dir, bool allowRep
                           ItemAmounts* delta) {
     PlaceRequest r;
     r.type = t;
-    r.pos = machineTopLeft(t, mouseTile);
+    r.pos = machineTopLeft(t, mouseTile, dir);
     r.dir = dir;
     std::vector<PlaceRequest> reqs{r};
     PlacePlan plan = planPlacement(reqs, allowReplace, protectedIds);
@@ -540,6 +559,96 @@ bool Builder::placeBlueprint(const Blueprint& bp, Vec2i tl, bool allowReplace, I
     if (delta) *delta = plan.delta;
     executePlacement(reqs, plan);
     return true;
+}
+
+// ---------------------------------------------------------------------------
+// Undo
+// ---------------------------------------------------------------------------
+// What one belt / machine is worth: build cost + what is inside.
+static ItemAmounts snapValue(const ObjSnap& s) {
+    if (!s.belt) return s.machine->refundItems();
+    ItemAmounts v = beltBuildCost();
+    if (s.beltState.item != NO_ITEM) addAmount(v, s.beltState.item, 1);
+    return v;
+}
+
+Builder::UndoResult Builder::undo(const UndoRecord& rec, ItemAmounts* delta, UndoRecord* inverse) {
+    if (rec.empty()) return UndoResult::Nothing;
+    // 1. everything the action added must still be there
+    std::vector<int> belts, machines;
+    std::set<int> machineSet;
+    for (const ObjSnap& a : rec.added) {
+        if (a.belt) {
+            int id = world.beltIdAt(a.pos);
+            if (id < 0) return UndoResult::Changed;
+            if (std::find(belts.begin(), belts.end(), id) == belts.end()) belts.push_back(id);
+        } else {
+            int id = world.machineIdAt(a.pos);
+            if (id < 0 || world.machine(id).pos != a.pos || world.machine(id).type != a.type) return UndoResult::Changed;
+            if (machineSet.insert(id).second) machines.push_back(id);
+        }
+    }
+    // 2. the old things must fit where they were (what step 1 removes is free)
+    std::set<std::pair<int, int>> freed;
+    for (int id : belts) freed.insert({world.belt(id).pos.x, world.belt(id).pos.y});
+    for (int id : machines) {
+        const Machine& m = world.machine(id);
+        for (Vec2i c : footprint(m.pos, m.w, m.h)) freed.insert({c.x, c.y});
+    }
+    std::set<std::pair<int, int>> taken;
+    for (const ObjSnap& s : rec.removed) {
+        int w = s.belt ? 1 : s.machine->w, h = s.belt ? 1 : s.machine->h;
+        for (Vec2i c : footprint(s.pos, w, h)) {
+            if ((world.isCellBlocked(c) && !freed.count({c.x, c.y})) || !taken.insert({c.x, c.y}).second) return UndoResult::Blocked;
+            if (isBlockedByPlayer(c)) return UndoResult::PlayerInTheWay;
+        }
+    }
+    // 3. items: get back what the added things are worth now, pay what the
+    //    old things were worth (build cost + their contents) - all or nothing
+    ItemAmounts net;
+    for (auto& p : refundTotals(belts, machines)) addAmount(net, p.first, p.second);
+    for (const ObjSnap& s : rec.removed)
+        for (auto& p : snapValue(s)) addAmount(net, p.first, -p.second);
+    ItemAmounts pay, get;
+    for (auto& p : net) {
+        if (p.second < 0) addAmount(pay, p.first, -p.second);
+        else if (p.second > 0) addAmount(get, p.first, p.second);
+    }
+    Inventory scratch = player.inventory;
+    if (!scratch.tryRemoveAll(pay)) return UndoResult::NoFunds;
+    for (auto& p : get)
+        if (!scratch.tryAdd(p.first, p.second)) return UndoResult::NoSpace;
+    // 4. do it, recording what this does: that is exactly how to redo it
+    bool rec0 = world.recordChanges;
+    world.takeRecord();   // (the caller hands over anything pending first)
+    world.recordChanges = true;
+    player.inventory = scratch;
+    for (int id : belts) world.removeBelt(id);
+    for (int id : machines) world.removeMachine(id);
+    for (const ObjSnap& s : rec.removed) {
+        if (s.belt) {
+            const Belt& old = s.beltState;
+            int id = world.addBelt(old.pos, old.dir);
+            Belt& b = world.belt(id);
+            b.filter = old.filter;
+            b.item = old.item;
+            b.progress = old.progress;
+            b.itemFrom = old.itemFrom;
+        } else {
+            auto m = std::make_unique<Machine>(*s.machine);
+            m->anims.clear();
+            m->reservedFor = -1;
+            m->outBelts.clear();
+            world.addMachine(std::move(m));
+        }
+    }
+    UndoRecord inv = world.takeRecord();
+    if (inverse) *inverse = std::move(inv);
+    world.recordChanges = rec0;
+    world.markTopologyDirty();
+    world.ensureTopology();
+    if (delta) *delta = net;
+    return UndoResult::Ok;
 }
 
 // ---------------------------------------------------------------------------

@@ -2,6 +2,7 @@
 #include "Ui.hpp"
 #include "Assets.hpp"
 #include <algorithm>
+#include <cctype>
 #include <cmath>
 #include <cstdlib>
 
@@ -273,18 +274,17 @@ void drawModalShade() {
 // ---------------------------------------------------------------------------
 // TextInput
 // ---------------------------------------------------------------------------
-static const int TI_FONT = 22;
 
 TextInput::TextInput(Rectangle r, const std::string& initial) : rect(r), text(initial), cursor(int(initial.size())) {}
 
-bool TextInput::fits(const std::string& s) const { return measure(s, TI_FONT).x <= rect.width - 16; }
+bool TextInput::fits(const std::string& s) const { return measure(s, fontSize).x <= rect.width - 16 - rightPad; }
 
 int TextInput::indexAtX(float x) const {
     float click = x - (rect.x + 8);
     int best = 0;
     float bestDist = std::fabs(click);
     for (int i = 1; i <= int(text.size()); ++i) {
-        float d = std::fabs(measure(text.substr(0, size_t(i)), TI_FONT).x - click);
+        float d = std::fabs(measure(text.substr(0, size_t(i)), fontSize).x - click);
         if (d < bestDist) { bestDist = d; best = i; }
     }
     return best;
@@ -334,11 +334,11 @@ void TextInput::update(float dt) {
 void TextInput::draw() const {
     fillRound(rect, 8, WHITE);
     lineRound(rect, 8, 2, active ? ui::BTN : rgba(120, 120, 120));
-    Vector2 m = measure(text.empty() ? "A" : text, TI_FONT);
+    Vector2 m = measure(text.empty() ? "A" : text, fontSize);
     float ty = rect.y + (rect.height - m.y) / 2;
-    ::text(text, rect.x + 8, ty, TI_FONT, BLACK);
+    ::text(text, rect.x + 8, ty, fontSize, BLACK);
     if (active && cursorVisible_) {
-        float cx = rect.x + 8 + measure(text.substr(0, size_t(cursor)), TI_FONT).x;
+        float cx = rect.x + 8 + measure(text.substr(0, size_t(cursor)), fontSize).x;
         DrawLineEx({cx, rect.y + 6}, {cx, rect.y + rect.height - 6}, 2, BLACK);
     }
 }
@@ -416,4 +416,66 @@ float drawFoldHeader(Rectangle row, const std::string& title, bool open, const F
     Vector2 m = measure(title, st.fontSize, st.bold);
     text(title, tx, row.y + (row.height - m.y) / 2, st.fontSize, st.text, st.bold);
     return tx + m.x;
+}
+
+// ---------------------------------------------------------------------------
+// Search box: a TextInput (same typing as everywhere else) + placeholder + x
+// ---------------------------------------------------------------------------
+SearchBox::SearchBox() {
+    input.active = false;
+    input.fontSize = 16;
+}
+
+void SearchBox::sync() {
+    input.rect = rect;
+    input.rightPad = rect.height;   // room for the x
+}
+
+bool SearchBox::handle(const Event& e) {
+    sync();
+    if (e.type == EvType::MouseDown) {
+        if (!inRect(rect, e.pos)) { input.active = false; return false; }
+        if (!input.text.empty() && inRect(clearRect(), e.pos)) {
+            input.text.clear();
+            input.cursor = 0;
+            input.active = true;
+            return true;
+        }
+        input.handle(e);   // focus + cursor where you clicked
+        return true;
+    }
+    if (!input.active) return false;
+    if (e.type == EvType::KeyDown || e.type == EvType::Text) {
+        input.handle(e);
+        if (input.submitted || input.cancelled) {   // Enter / ESC: stop typing, keep the text
+            input.submitted = input.cancelled = false;
+            input.active = false;
+        }
+        return true;   // every key belongs to the box while typing
+    }
+    return false;
+}
+
+bool SearchBox::matches(const std::string& s) const {
+    if (input.text.empty()) return true;
+    auto lower = [](std::string v) {
+        for (char& c : v) c = char(std::tolower((unsigned char)c));
+        return v;
+    };
+    return lower(s).find(lower(input.text)) != std::string::npos;
+}
+
+void SearchBox::draw(float dt) {
+    sync();
+    input.update(dt);
+    input.draw();
+    if (input.text.empty() && !input.active)
+        ::text("Search...", rect.x + 8, rect.y + rect.height / 2 - 9, 16, rgba(140, 140, 140));
+    if (!input.text.empty()) {   // x: clear
+        Rectangle c = clearRect();
+        Vector2 m{c.x + c.width / 2, c.y + c.height / 2};
+        Color col = hovered(c) ? rgba(170, 20, 20) : rgba(110, 110, 110);
+        DrawLineEx({m.x - 4, m.y - 4}, {m.x + 4, m.y + 4}, 2, col);
+        DrawLineEx({m.x - 4, m.y + 4}, {m.x + 4, m.y - 4}, 2, col);
+    }
 }

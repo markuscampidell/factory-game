@@ -161,6 +161,8 @@ public:
     bool active = true;
     bool submitted = false;
     bool cancelled = false;
+    int fontSize = 22;
+    float rightPad = 0;   // keep text clear of something drawn on the right
 
 private:
     bool fits(const std::string& s) const;
@@ -230,3 +232,28 @@ void drawFoldArrow(Vector2 center, float size, bool open, Color c);
 // Row background (brighter under the mouse) + arrow + title. Returns the x
 // where the title ends, for extra info drawn after it.
 float drawFoldHeader(Rectangle row, const std::string& title, bool open, const FoldHeaderStyle& style = {});
+
+// ---------------------------------------------------------------------------
+// Search box (item picker, handcrafting, blueprint list). Click it to type;
+// while it has the focus it gets every key, so typing never triggers game
+// keys. Enter / ESC / a click elsewhere drop the focus (the text stays);
+// the x on the right clears it.
+// ---------------------------------------------------------------------------
+class SearchBox {
+public:
+    SearchBox();
+    Rectangle rect{};
+    TextInput input;   // the same text field as in the name dialogs
+    // true if the event was used (a click on the box, or typing while focused)
+    bool handle(const Event& e);
+    void draw(float dt);
+    const std::string& text() const { return input.text; }
+    bool focused() const { return input.active; }
+    void unfocus() { input.active = false; }
+    void clear() { input.text.clear(); input.cursor = 0; input.active = false; }
+    // case-insensitive "contains"; an empty search matches everything
+    bool matches(const std::string& s) const;
+    Rectangle clearRect() const { return {rect.x + rect.width - rect.height, rect.y, rect.height, rect.height}; }
+private:
+    void sync();
+};

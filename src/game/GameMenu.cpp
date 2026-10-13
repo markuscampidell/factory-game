@@ -16,35 +16,42 @@ const std::vector<ControlSection>& controlSections() {
         {"Zoom", {{"Scroll Wheel (over the world)", "Zoom in / out around the mouse"},
                   {"+ / -", "Zoom in / out"},
                   {"Minimap", "Bottom left: shows the area around you. Click it to open the map view"},
+                  {"P", "Place a named map marker where the mouse is (shown on the map view and the minimap). P on a marker: rename or delete it"},
+                  {"Add map marker (button)", "Above Delete area: pick up a marker, move around (also in the map view) and left click to place it. Right click / ESC: cancel"},
                   {"Map view", "M, a click on the minimap, or keep zooming out: zooming stops at 40%; 10 more notches in a row switch to the map (a bar in the middle of the screen fills up; it empties after a 1 s pause). If you zoom out fast, the zoom first stays at 40% for a quarter of a second, then the notches start counting. Leaving works the same way, zooming in. Zoomed far out, everything built is drawn as plain boxes. You can't move, build single things or delete single things there, but Copy / Paste (Ctrl + C / V), Delete area (Ctrl + X) and blueprints work"}}},
         {"Menus (ESC)", {{"ESC", "Close the open panels (an open item picker first), then leave build mode, then open the Game Menu. In the Game Menu: one step back"},
                          {"TAB / Inventory", "Toggle your inventory (button on the left edge)"},
                          {"F / Handcrafting", "Toggle the hand-crafting panel (button on the right edge)"},
-                         {"Controls", "This list (button next to Menu, top right)"}}},
+                         {"Controls", "This list (button next to Menu, top right)"},
+                         {"Autosave", "Every 5 minutes of play the game is saved in the background. If you didn't save after that (a crash, Exit without saving), Load Game shows 'Load autosave' on your save"}}},
         {"Building (bottom-of-screen hotbar)",
          {{"1 - 6", "Select a buildable: Smelter, Assembler, Belt, Splitter, Storage, Miner"},
           {"7", "Select Nothing - deselects, same as clicking that hotbar slot"},
           {"8 / X", "Toggle delete mode"},
           {"Click a hotbar slot", "Same as pressing its number - the row is always clickable"},
-          {"Alt / Alt button (bottom right)", "Show / hide the output icons on machines"},
+          {"Alt / Icons button (bottom right)", "Show / hide the output icons on machines and the item icons on chests"},
           {"M / minimap (bottom left)", "Map view on / off (back to the zoom you had)"},
           {"Blueprints button (bottom right)", "Open the blueprint list (same as B)"},
           {"C", "Point at a machine or belt and press this to pick its type into the hotbar"},
           {"Middle Click", "Pick up a machine/belt/splitter (with its direction) to build more of it. Recipe and filters stay default; not saved, Ctrl + V ignores it"},
-          {"R", "Rotate the selected building clockwise (belts and splitters; a hint at the top reminds you while you hold one)"},
+          {"R", "Rotate the selected building clockwise (belts, splitters, and a held copy / blueprint; a miner switches between standing and lying; square machines have one direction)"},
           {"Shift + R", "Rotate the selected building counter-clockwise"},
           {"T", "Rotate the selected building 180 degrees"},
+          {"G", "While holding a copy / blueprint: mirror it left <-> right"},
+          {"Ctrl + Z", "Undo the last build, delete, paste or area delete (up to 50 steps). Everything comes back exactly - you pay for it again, or get it back. (On a German keyboard Ctrl + Y does the same - it's the same key)"},
+          {"Ctrl + R", "Redo what you just undid (plain R still rotates). A new build / delete clears what could be redone"},
           {"Left Click", "Place the selected building - or delete under the cursor in delete mode"},
           {"Left Click (belts)", "First click starts a belt line, second click finishes it"},
           {"Shift (while building or pasting)", "Replace whatever is in the way. Belts and machines of the same kind are turned/updated in place and keep their items (a machine only hands out its items if its recipe changes); everything else is refunded"},
-          {"Shift + Left Click", "In delete mode, delete an entire connected belt run at once"},
+          {"Shift + Left Click", "In delete mode, delete an entire connected belt run at once (the delete-mode hint says so too)"},
+          {"Holding a belt", "Arrows on the sides of nearby machines: a double arrow = a belt there can go in or out; a placed belt shows green 'out' (the machine pushes onto it) or blue 'in' (it feeds the machine)"},
           {"Right Click", "Cancel the current placement, or exit build/delete mode"}}},
-        {"Mining & Recipes", {{"Hold Right Click (on ore)", "Mine raw resources by hand (half the speed of a Miner)"},
-                              {"Shift + Right Click", "Copy a machine's recipe, a belt's filter or a splitter's filters"},
-                              {"Shift + Left Click (hold)", "Paste onto the machine/belt/splitter - keep holding and sweep the mouse to paste onto many"}}},
-        {"Copy, Paste & Blueprints",
-         {{"Copy / Paste / Delete area", "Buttons above the bottom right buttons - the same as Ctrl + C / Ctrl + V / Ctrl + X. Click the lit-up one again to stop"},
-          {"Ctrl + C", "Copy many things: drag a rectangle over machines/belts, then click to place the copy"},
+        {"Mining & Copy settings", {{"Hold Right Click (on ore)", "Mine raw resources by hand (half the speed of a Miner)"},
+                              {"Shift + Right Click", "Copy settings: a machine's recipe, a belt's filter or a splitter's filters"},
+                              {"Shift + Left Click (hold)", "Paste settings onto the machine/belt/splitter - keep holding and sweep the mouse to paste onto many"}}},
+        {"Copy area, Paste & Blueprints",
+         {{"Copy area / Paste / Delete area", "Buttons above the bottom right buttons - the same as Ctrl + C / Ctrl + V / Ctrl + X. Click the lit-up one again to stop"},
+          {"Ctrl + C", "Copy area: drag a rectangle over machines/belts, then click to place the copy (R / T turn it, G mirrors it)"},
           {"Ctrl + X", "Delete many things: drag a rectangle - everything inside is removed and refunded (only if it all fits in your inventory). Right click: normal deleting"},
           {"Ctrl + V", "Place the last copy again (needs free space or identical things underneath, and the items in your inventory)"},
           {"Ctrl + B", "Make a blueprint: drag a rectangle, then name it and press Save blueprint (or Reselect). ESC / click outside cancels"},
@@ -55,6 +62,7 @@ const std::vector<ControlSection>& controlSections() {
           {"Right Click", "While copying/placing: back to normal building"},
           {"ESC", "Cancel copying/placing completely"}}},
         {"Crafting", {{"Left Click", "Select a recipe, or press Produce/Cancel"},
+                      {"Search boxes", "Handcrafting, the item picker and the blueprint list have one: click it and type to filter. While you type, keys don't do anything else. Enter / ESC: stop typing; the x clears it"},
                       {"SPACE", "Toggle auto-craft for the selected recipe"}}},
         {"Inventory & Storage",
          {{"Left Click", "Open a machine's, storage's, splitter's, or belt's panel by clicking its tile"},
@@ -87,7 +95,7 @@ std::vector<std::string> wrap(const std::string& s, int size, float maxW) {
 }
 
 Rectangle menuButtonRect(float w) { return {w - 110, 10, 100, 32}; }
-Rectangle menuPanelRect(float w, float h) { return centeredRect(std::floor(w / 2), std::floor(h / 2), 320, 280); }
+Rectangle menuPanelRect(float w, float h) { return centeredRect(std::floor(w / 2), std::floor(h / 2), 320, 340); }
 Rectangle saveAsPanelRect(float w, float h) { return centeredRect(std::floor(w / 2), std::floor(h / 2), 360, 160); }
 } // namespace
 
@@ -101,13 +109,15 @@ Rectangle GameScreen::altButtonRect() const { return {ui::screenW() - 10 - 120 -
 Rectangle GameScreen::controlsButtonRect() const { return {ui::screenW() - 110 - 10 - 110, 10, 110, 32}; }
 // Copy / Paste / Delete area: one row above Map / Alt / Blueprints (high
 // enough to stay clear of the hotbar)
-namespace { constexpr float EDIT_ROW_UP = 108, CUT_W = 130, COPY_W = 80; }
+namespace { constexpr float EDIT_ROW_UP = 108, CUT_W = 130, COPY_W = 80, COPY_AREA_W = 110; }
 Rectangle GameScreen::cutButtonRect() const { return {ui::screenW() - 10 - CUT_W, ui::screenH() - EDIT_ROW_UP, CUT_W, 32}; }
 Rectangle GameScreen::pasteButtonRect() const {
     return {ui::screenW() - 10 - CUT_W - 10 - COPY_W, ui::screenH() - EDIT_ROW_UP, COPY_W, 32};
 }
+// "Add map marker": above Delete area
+Rectangle GameScreen::markerButtonRect() const { return {ui::screenW() - 10 - CUT_W, ui::screenH() - EDIT_ROW_UP - 42, CUT_W, 32}; }
 Rectangle GameScreen::copyButtonRect() const {
-    return {ui::screenW() - 10 - CUT_W - 10 - COPY_W - 10 - COPY_W, ui::screenH() - EDIT_ROW_UP, COPY_W, 32};
+    return {ui::screenW() - 10 - CUT_W - 10 - COPY_W - 10 - COPY_AREA_W, ui::screenH() - EDIT_ROW_UP, COPY_AREA_W, 32};
 }
 // Inventory (left edge) and Handcrafting (right edge), level with the
 // middle of the panels. Narrow enough that even the widest panel (splitter
@@ -120,7 +130,7 @@ Rectangle GameScreen::craftButtonRect() const {
 
 bool GameScreen::overHudButtons(Vector2 p) const {
     if (inRect(menuButtonRect(ui::screenW()), p) || inRect(controlsButtonRect(), p) || inRect(blueprintButtonRect(), p) ||
-        inRect(altButtonRect(), p) || inRect(copyButtonRect(), p) ||
+        inRect(altButtonRect(), p) || inRect(copyButtonRect(), p) || inRect(markerButtonRect(), p) ||
         inRect(pasteButtonRect(), p) || inRect(cutButtonRect(), p))
         return true;
     // these sit under the panels: an open panel on top of them wins
@@ -130,11 +140,14 @@ bool GameScreen::overHudButtons(Vector2 p) const {
 
 std::string GameScreen::hudButtonTooltip(Vector2 p) const {
     if (inRect(controlsButtonRect(), p)) return "Show all keyboard and mouse controls";
+    if (inRect(markerButtonRect(), p))
+        return markerPlacing_ ? "Click a spot in the world to place the marker - right click / ESC cancels"
+                              : "Add map marker: pick it up, move around and left click to place it (or press P at the mouse)";
     if (inRect(copyButtonRect(), p))
-        return "Copy (Ctrl + C): drag a rectangle over machines and belts, then click to place the copy";
+        return "Copy area (Ctrl + C): drag a rectangle over machines and belts, then click to place the copy";
     if (inRect(pasteButtonRect(), p))
-        return clipboard_.empty() ? "Paste (Ctrl + V): nothing copied yet - use Copy first"
-                                  : "Paste (Ctrl + V): place your last copy again";
+        return clipboard_.empty() ? "Paste (Ctrl + V): nothing copied yet - use Copy area first"
+                                  : "Paste (Ctrl + V): place your last copied area again";
     if (inRect(cutButtonRect(), p))
         return "Delete area (Ctrl + X): drag a rectangle - everything inside is removed and refunded";
     if (!mouseOverOpenPanel(p)) {
@@ -148,8 +161,8 @@ std::string GameScreen::hudButtonTooltip(Vector2 p) const {
     }
     if (inRect(blueprintButtonRect(), p)) return "Open your blueprints (B)";
     if (inRect(altButtonRect(), p))
-        return showOutputs_ ? "Machine outputs and chest contents are shown - click or press Alt to hide them"
-                            : "Machine outputs and chest contents are hidden - click or press Alt to show them";
+        return showOutputs_ ? "Icons (Alt): machine outputs and chest contents are shown - click or press Alt to hide them"
+                            : "Icons (Alt): machine outputs and chest contents are hidden - click or press Alt to show them";
     if (inRect(menuButtonRect(ui::screenW()), p)) return "Game menu (ESC)";
     return "";
 }
@@ -157,10 +170,19 @@ std::string GameScreen::hudButtonTooltip(Vector2 p) const {
 // Names of hotbar slots and top right buttons under the mouse. Drawn last so
 // they are on top of everything; hidden while a dialog is open.
 void GameScreen::drawHudTooltips() {
-    if (menuOpen_ || saveAsOpen_ || controlsOpen_ || exitConfirm_ || bpDeleteConfirm_ || bpSaveOpen_ || bpBookDialogOpen_) return;
+    if (menuOpen_ || saveAsOpen_ || controlsOpen_ || exitConfirm_ || bpDeleteConfirm_ || bpSaveOpen_ || bpBookDialogOpen_ ||
+        markerDialogOpen_)
+        return;
     Vector2 m = ui::mouse();
     std::string tip = hotbarTooltip(m);
     if (tip.empty()) tip = hudButtonTooltip(m);
+    // an ore tile you could mine (hoveredOre_ is only set when that's possible)
+    if (tip.empty() && hoveredOre_ && !mining_) tip = "Hold right click to mine " + itemDef(world_.oreAt(*hoveredOre_)).name;
+    // a map marker: its name (in the map view the name is drawn anyway)
+    if (tip.empty() && !mapMode()) {
+        int mk = markerAt(m);
+        if (mk >= 0) tip = markers_[size_t(mk)].name + "  (P: rename / delete)";
+    }
     if (!tip.empty()) drawTooltip(tip, m);
 }
 
@@ -255,12 +277,14 @@ bool GameScreen::menuBarHandle(const Event& e) {
         if (e.type == EvType::MouseDown && e.button == MB_LEFT) {
             Rectangle panel = menuPanelRect(w, h);
             float cx = panel.x + panel.width / 2;
-            Rectangle saveExit = centeredRect(cx, panel.y + 90, 240, 44);
+            Rectangle save = centeredRect(cx, panel.y + 90, 240, 44);
             Rectangle saveAs = centeredRect(cx, panel.y + 150, 240, 44);
-            Rectangle exitR = centeredRect(cx, panel.y + 210, 240, 44);
+            Rectangle saveExit = centeredRect(cx, panel.y + 210, 240, 44);
+            Rectangle exitR = centeredRect(cx, panel.y + 270, 240, 44);
             Rectangle closeX = panelCloseRect(panel);
             if (!inRect(panel, e.pos)) menuOpen_ = false;
             else if (inRect(closeX, e.pos)) menuOpen_ = false;
+            else if (inRect(save, e.pos)) { saveNow(saveName_); notify("Saved '" + saveName_ + "'"); }   // menu stays open
             else if (inRect(saveExit, e.pos)) { saveNow(saveName_); returnToMenu_ = true; menuOpen_ = false; }
             else if (inRect(saveAs, e.pos)) openSaveAs(saveName_);
             else if (inRect(exitR, e.pos)) exitConfirm_ = std::make_unique<ConfirmDialog>("Save before exiting?", true);   // X = don't exit
@@ -273,7 +297,14 @@ bool GameScreen::menuBarHandle(const Event& e) {
         return true;
     }
     if (e.type != EvType::MouseDown || e.button != MB_LEFT) return false;
-    if (bpSaveOpen_ || bpBookDialogOpen_ || bpDeleteConfirm_) return false;   // blueprintHandle has them
+    if (bpSaveOpen_ || bpBookDialogOpen_ || bpDeleteConfirm_ || markerDialogOpen_) return false;   // blueprintHandle has them
+    if (inRect(markerButtonRect(), e.pos)) {
+        bool wasPlacing = markerPlacing_;
+        closeAllPanels();
+        resetBuildState();
+        markerPlacing_ = !wasPlacing;   // click again: put it back
+        return true;
+    }
     if (inRect(controlsButtonRect(), e.pos)) {
         closeAllPanels();
         controlsOpen_ = true;
@@ -324,16 +355,17 @@ void GameScreen::drawMenuBar() {
     hudButton(menuButtonRect(w), "Menu", menuOpen_ || saveAsOpen_ || exitConfirm_ != nullptr);
     hudButton(controlsButtonRect(), "Controls", controlsOpen_);
     // Copy / Paste / Delete area light up while you are doing that
-    hudButton(copyButtonRect(), "Copy", bpMode_ == BpMode::Selecting && !bpForList_);
+    hudButton(copyButtonRect(), "Copy area", bpMode_ == BpMode::Selecting && !bpForList_);
     hudButton(pasteButtonRect(), "Paste", bpMode_ == BpMode::Placing);
     drawButton(cutButtonRect(), "Delete area", ui::BTN_DANGER, 18, bpMode_ == BpMode::Cutting);
+    drawButton(markerButtonRect(), "Add map marker", ui::BTN, 16, markerPlacing_);
     if (clipboard_.empty() && bpMode_ != BpMode::Placing) fillRound(pasteButtonRect(), 8, Color{20, 20, 20, 110});
     hudButton(blueprintButtonRect(), "Blueprints", bpListOpen_);
     // Alt: lit up (like an active hotbar slot) while outputs are shown
     Rectangle alt = altButtonRect();
     drawButtonBase(alt, showOutputs_ ? ui::ACTIVE_SLOT : rgba(55, 55, 55));
     lineRound(alt, 8, 2, rgba(20, 20, 20));
-    textCentered("Alt", alt.x + alt.width / 2, alt.y + alt.height / 2, 18, showOutputs_ ? BLACK : rgba(200, 200, 200));
+    textCentered("Icons", alt.x + alt.width / 2, alt.y + alt.height / 2, 18, showOutputs_ ? BLACK : rgba(200, 200, 200));
 }
 
 // Inventory (left edge) and Handcrafting (right edge). Drawn before the
@@ -345,7 +377,7 @@ void GameScreen::drawEdgeButtons() {
 
 bool GameScreen::anyModalOpen() const {
     return menuOpen_ || saveAsOpen_ || controlsOpen_ || exitConfirm_ || saveAsConfirm_ || saveAsMessage_ ||
-           bpSaveOpen_ || bpDeleteConfirm_ || bpBookDialogOpen_;
+           bpSaveOpen_ || bpDeleteConfirm_ || bpBookDialogOpen_ || markerDialogOpen_;
 }
 
 void GameScreen::drawModals(float dt) {
@@ -358,9 +390,10 @@ void GameScreen::drawModals(float dt) {
         drawModalShade();
         drawPanel(panel, "Game Menu");
         float cx = panel.x + panel.width / 2;
-        drawButton(centeredRect(cx, panel.y + 90, 240, 44), "Save and exit", ui::BTN_OK);
+        drawButton(centeredRect(cx, panel.y + 90, 240, 44), "Save", ui::BTN_OK);
         drawButton(centeredRect(cx, panel.y + 150, 240, 44), "Save As", ui::BTN);
-        drawButton(centeredRect(cx, panel.y + 210, 240, 44), "Exit", ui::BTN_DANGER);
+        drawButton(centeredRect(cx, panel.y + 210, 240, 44), "Save and exit", ui::BTN_OK);
+        drawButton(centeredRect(cx, panel.y + 270, 240, 44), "Exit", ui::BTN_DANGER);
     }
     if (saveAsOpen_) {
         ui::setHoverBlocked(saveAsConfirm_ || saveAsMessage_);
@@ -380,6 +413,7 @@ void GameScreen::drawModals(float dt) {
     if (controlsOpen_) drawControls();
     drawBpSaveDialog();
     drawBpBookDialog();
+    drawMarkerDialog();
     if (bpDeleteConfirm_) bpDeleteConfirm_->draw();
 }
 

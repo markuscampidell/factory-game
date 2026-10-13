@@ -35,6 +35,12 @@ struct Blueprint {
     void computeMasks();             // fills BlueprintBelt::mask
 };
 
+// Turned / mirrored copies (R / T / G while holding a blueprint or copy).
+// Belts, splitters and miners turn with it (a miner lies down / stands up);
+// a mirrored splitter swaps its left and right filters.
+Blueprint rotatedCW(const Blueprint& bp, int quarterTurns = 1);
+Blueprint mirrored(const Blueprint& bp);   // left <-> right
+
 // A named group in the blueprint list. Books can't contain books.
 struct BlueprintBook {
     int id = 0;              // > 0, unique; Blueprint::book refers to it

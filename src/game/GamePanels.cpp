@@ -31,7 +31,8 @@ Rectangle cell(Vector2 tl, int i, int cols) {
 float filterContentW() { return std::max(gridW(F_COLS), F_CHECK + 8 + measure("Filter enabled", 15).x); }
 float filterContentH(bool label) { return (label ? F_LABEL_H : 0) + F_CHECK + 8 + gridH(ItemFilter::SLOT_COUNT, F_COLS); }
 float pickerW() { return gridW(P_COLS); }
-float pickerH() { return P_TITLE_H + gridH(itemCount(), P_COLS); }
+constexpr float P_SEARCH_H = 30;   // search box above the grid
+float pickerH() { return P_TITLE_H + P_SEARCH_H + gridH(itemCount(), P_COLS); }
 
 std::string fmtPerMin(double v) {
     char buf[32];
@@ -196,18 +197,22 @@ void GameScreen::drawRecipeInfoNearMouse(const Recipe& rc) {
 // ---------------------------------------------------------------------------
 namespace {
 struct MachineLayout {
+    Rectangle search{};   // recipe search box (width 0: the machine has no recipes)
     std::vector<std::pair<Rectangle, const Recipe*>> recipes;
     std::vector<std::pair<Rectangle, int>> inputs, outputs; // slot rect, buffer index
 };
 
-MachineLayout layoutMachine(const Machine& m, Rectangle r) {
+MachineLayout layoutMachine(const Machine& m, Rectangle r, const SearchBox& search) {
     MachineLayout L;
     float y = r.y + ui::TITLE_H, right = r.x + r.width - 15;
     if (auto* list = m.recipeChoices()) {
         y += measure("Recipes:", 20, true).y + 8;
         float bw = 150;   // all recipe buttons as wide as the longest name
         for (const Recipe* rc : *list) bw = std::max(bw, measure(rc->name, 18).x + 50);
+        L.search = {right - bw, y, bw, 30};
+        y += 30 + 8;
         for (const Recipe* rc : *list) {
+            if (!search.matches(rc->name)) continue;
             L.recipes.push_back({{right - bw, y, bw, 34}, rc});
             y += 34 + 8;
         }
@@ -234,7 +239,7 @@ void GameScreen::drawMachinePanel() {
     if (progress > 0) fillRound({bar.x, bar.y, bar.width * progress, bar.height}, 6, rgba(0, 230, 0));
     textCentered(std::to_string(int(progress * 100)) + "%", bar.x + bar.width / 2, bar.y + bar.height / 2, 24, BLACK);
 
-    MachineLayout L = layoutMachine(m, r);
+    MachineLayout L = layoutMachine(m, r, machineSearch_);
     std::vector<HoverEntry> hover;
     auto drawSlot = [&](Rectangle s, const MachineBuffer& b, double perMin) {
         drawSlotFrame(s);
@@ -282,6 +287,9 @@ void GameScreen::drawMachinePanel() {
     const Recipe* hoveredRecipe = nullptr;
     if (m.recipeChoices()) {
         textTopRight("Recipes:", r.x + r.width - 15, r.y + ui::TITLE_H, 20, BLACK, true);
+        machineSearch_.rect = L.search;
+        machineSearch_.draw(GetFrameTime());
+        if (L.recipes.empty()) textTopRight("No recipe matches", r.x + r.width - 15, L.search.y + 40, 16, ui::TEXT_DIM);
         for (auto& rr : L.recipes) {
             drawRecipeButton(rr.first, *rr.second, rr.second == m.recipe, hover);
             if (hovered(rr.first)) hoveredRecipe = rr.second;
@@ -295,7 +303,11 @@ void GameScreen::machinePanelHandle(const Event& e) {
     if (machinePanel_ < 0 || mode_ == BuildMode::Building || justPlaced_) return;
     if (e.type != EvType::MouseDown || e.button != MB_LEFT) return;
     Machine& m = world_.machine(machinePanel_);
-    MachineLayout L = layoutMachine(m, machineRect());
+    MachineLayout L = layoutMachine(m, machineRect(), machineSearch_);
+    if (L.search.width > 0) {
+        machineSearch_.rect = L.search;
+        if (machineSearch_.handle(e)) return;
+    }
     for (auto& rr : L.recipes) {
         if (!inRect(rr.first, e.pos)) continue;
         if (!builder_.setRecipe(m, rr.second)) notify("Not enough inventory space for the machine's items");
@@ -404,28 +416,60 @@ ItemFilter* GameScreen::pickerFilter() {
 }
 
 void GameScreen::drawPicker(Vector2 tl) {
-    if (!picker_) return;
+    if (!picker_) { pickerSearch_.clear(); return; }
     text("Choose an item", tl.x, tl.y, 15, BLACK, true);
-    Vector2 grid{tl.x, tl.y + P_TITLE_H};
+    pickerSearch_.rect = {tl.x, tl.y + P_TITLE_H, pickerW(), 26};
+    pickerSearch_.draw(GetFrameTime());
+    Vector2 grid{tl.x, tl.y + P_TITLE_H + P_SEARCH_H};
     std::vector<HoverEntry> hover;
-    for (int i = 0; i < itemCount(); ++i) {
-        Rectangle c = cell(grid, i, P_COLS);
+    auto items = pickerItems();
+    if (items.empty()) text("No item matches", grid.x, grid.y + 4, 14, ui::TEXT_DIM);
+    for (size_t k = 0; k < items.size(); ++k) {
+        Rectangle c = cell(grid, int(k), P_COLS);
         DrawRectangleRec(c, hovered(c) ? hex("#FFFFE8") : hex("#FFF3C4"));
         lineRect(c, 2, hex("#886F00"));
-        drawItemIcon(ItemId(i + 1), {c.x + 3, c.y + 3, c.width - 6, c.height - 6});
-        hover.push_back({c, ItemId(i + 1)});
+        drawItemIcon(items[k], {c.x + 3, c.y + 3, c.width - 6, c.height - 6});
+        hover.push_back({c, items[k]});
     }
     drawHoveredItemTooltip(hover);
+}
+
+std::vector<ItemId> GameScreen::pickerItems() const {
+    std::vector<ItemId> out;
+    for (int i = 0; i < itemCount(); ++i)
+        if (pickerSearch_.matches(itemDef(ItemId(i + 1)).name)) out.push_back(ItemId(i + 1));
+    return out;
+}
+
+// Handcrafting: search box under the title, the recipe list below it.
+Rectangle GameScreen::craftSearchRect() const {
+    Rectangle r = craftRect();
+    return {r.x + 10, r.y + ui::TITLE_H - 2, r.width - 34, 28};
+}
+Rectangle GameScreen::craftListViewport() const {
+    Rectangle r = craftRect();
+    float top = r.y + ui::TITLE_H + 32;
+    return {r.x, top, r.width - 20, (r.y + r.height - 320) - top};
+}
+std::vector<int> GameScreen::craftVisibleRecipes() const {
+    std::vector<int> out;
+    const auto& recipes = handcraftRecipes();
+    for (size_t i = 0; i < recipes.size(); ++i)
+        if (craftSearch_.matches(recipes[i]->name)) out.push_back(int(i));
+    return out;
 }
 
 bool GameScreen::pickerClick(Vector2 tl, const Event& e) {
     if (!picker_) return false;
     if (e.button == MB_RIGHT) { picker_.reset(); return true; }
-    Vector2 grid{tl.x, tl.y + P_TITLE_H};
+    pickerSearch_.rect = {tl.x, tl.y + P_TITLE_H, pickerW(), 26};
+    if (pickerSearch_.handle(e)) return true;
+    Vector2 grid{tl.x, tl.y + P_TITLE_H + P_SEARCH_H};
     ItemFilter* f = pickerFilter();
-    for (int i = 0; i < itemCount(); ++i) {
-        if (!inRect(cell(grid, i, P_COLS), e.pos)) continue;
-        ItemId id = ItemId(i + 1);
+    auto items = pickerItems();
+    for (size_t k = 0; k < items.size(); ++k) {
+        if (!inRect(cell(grid, int(k), P_COLS), e.pos)) continue;
+        ItemId id = items[k];
         if (f && !f->contains(id)) f->slots[size_t(picker_->slot)] = id;
         picker_.reset();
         return true;
@@ -489,15 +533,20 @@ void GameScreen::drawCraftPanel() {
 
     const auto& recipes = handcraftRecipes();
     const float rowH = 45;
-    Rectangle viewport{r.x, r.y + ui::TITLE_H, r.width - 20, (bottom - 320) - (r.y + ui::TITLE_H)};
-    float content = float(recipes.size()) * rowH;
+    craftSearch_.rect = craftSearchRect();
+    craftSearch_.draw(GetFrameTime());
+    Rectangle viewport = craftListViewport();
+    std::vector<int> shown = craftVisibleRecipes();
+    float content = float(shown.size()) * rowH;
     craftScroll_ = clampScroll(craftScroll_, content, viewport.height);
+    if (shown.empty()) textCentered("No recipe matches", r.x + r.width / 2, viewport.y + 24, 16, ui::TEXT_DIM);
 
     std::vector<HoverEntry> hover;
     const Recipe* hoveredRecipe = nullptr;
     ui::beginScissor({viewport.x, viewport.y, viewport.width, viewport.height});
-    for (size_t i = 0; i < recipes.size(); ++i) {
-        Rectangle row{r.x + 10, viewport.y - craftScroll_ + float(i) * rowH, r.width - 34, 40};
+    for (size_t k = 0; k < shown.size(); ++k) {
+        size_t i = size_t(shown[k]);
+        Rectangle row{r.x + 10, viewport.y - craftScroll_ + float(k) * rowH, r.width - 34, 40};
         if (row.y + row.height < viewport.y || row.y > viewport.y + viewport.height) continue;
         // only light up the part of the row that is visible
         bool visible = inRect(viewport, ui::mouse());
@@ -559,13 +608,15 @@ void GameScreen::craftHandleClick(const Event& e) {
         player_.craftTicks = 0;
         return;
     }
-    Rectangle viewport{r.x, r.y + ui::TITLE_H, r.width - 20, (bottom - 320) - (r.y + ui::TITLE_H)};
+    craftSearch_.rect = craftSearchRect();
+    if (craftSearch_.handle(e)) return;
+    Rectangle viewport = craftListViewport();
     if (!inRect(viewport, e.pos)) return;
-    const auto& recipes = handcraftRecipes();
-    for (size_t i = 0; i < recipes.size(); ++i) {
-        Rectangle row{r.x + 10, viewport.y - craftScroll_ + float(i) * 45, r.width - 34, 40};
+    std::vector<int> shown = craftVisibleRecipes();
+    for (size_t k = 0; k < shown.size(); ++k) {
+        Rectangle row{r.x + 10, viewport.y - craftScroll_ + float(k) * 45, r.width - 34, 40};
         if (inRect(row, e.pos)) {
-            player_.selectedRecipe = int(i);
+            player_.selectedRecipe = shown[k];
             player_.craftMode = CraftMode::None;
             player_.craftTicks = 0;
             return;

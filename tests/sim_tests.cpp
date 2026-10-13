@@ -230,7 +230,9 @@ static void testConservationFuzz() {
 
     std::mt19937 rng(7);
     auto rnd = [&](int lo, int hi) { return std::uniform_int_distribution<int>(lo, hi)(rng); };
-    int built = 0, deleted = 0;
+    int built = 0, deleted = 0, undone = 0;
+    w.recordChanges = true;          // and undo things at random
+    std::vector<UndoRecord> undoStack;
     for (int step = 0; step < 6000; ++step) {
         int op = rnd(0, 9);
         Vec2i t{rnd(-6, 14), rnd(-6, 8)};
@@ -251,12 +253,17 @@ static void testConservationFuzz() {
             // copy a random area and paste it somewhere (sometimes with Shift = replace)
             Blueprint bp = captureBlueprint(w, t, {t.x + rnd(-5, 5), t.y + rnd(-5, 5)});
             if (!bp.empty() && b.placeBlueprint(bp, {rnd(-6, 14), rnd(-6, 8)}, shift)) ++built;
+        } else if (op == 9 && rnd(0, 2) == 0 && !undoStack.empty()) {
+            if (b.undo(undoStack.back()) == Builder::UndoResult::Ok) ++undone;
+            undoStack.pop_back();
         } else {
             for (int k = 0; k < 40; ++k) w.tick();
         }
         // No recipes can run without matching inputs here (only copper ore
         // and ingots exist and smelters start on iron), but copper smelting
         // could: compare in "ore equivalents".
+        UndoRecord rec = w.takeRecord();
+        if (!rec.empty()) undoStack.push_back(std::move(rec));
         auto now = worldValue(w, p);
         auto eq = [](std::map<ItemId, int> m) {
             m[COPPER_ORE] += 3 * m[COPPER_INGOT];
@@ -270,7 +277,105 @@ static void testConservationFuzz() {
         }
     }
     ++g_passed;
-    std::printf("  conservation fuzz: %d builds, %d deletes, 6000 steps, no item created or lost\n", built, deleted);
+    std::printf("  conservation fuzz: %d builds, %d deletes, %d undos, 6000 steps, no item created or lost\n", built, deleted, undone);
+    CHECK(undone > 50, "fuzz should undo things (%d)", undone);
+}
+
+// ---------------------------------------------------------------------------
+// Undo puts back exactly what was there, contents included.
+static void testUndo() {
+    World w; w.seed = 1;
+    Player p; p.setCenter(-5000, -5000);
+    p.inventory.tryAdd(IRON_INGOT, 500);
+    p.inventory.tryAdd(COPPER_INGOT, 200);
+    Builder b(w, p);
+    w.recordChanges = true;
+    auto before = asMap(p.inventory.contents());
+    // build -> undo: gone, paid back
+    CHECK(b.placeMachine(MachineType::Smelter, {1, 1}, Dir::Right, false, nullptr) >= 0, "place smelter");
+    UndoRecord r1 = w.takeRecord();
+    CHECK(b.undo(r1) == Builder::UndoResult::Ok && w.machineAt({1, 1}) == nullptr && asMap(p.inventory.contents()) == before,
+          "undo build");
+    // delete a full chest -> undo: chest and its contents are back, inventory as before the delete
+    int st = w.addMachine(makeMachine(MachineType::Storage, {10, 0}));
+    w.machine(st).storage.tryAdd(COPPER_ORE, 37);
+    w.takeRecord();
+    auto invBefore = asMap(p.inventory.contents());
+    CHECK(b.deleteMachineAt({10, 0}), "delete chest");
+    UndoRecord r2 = w.takeRecord();
+    CHECK(b.undo(r2) == Builder::UndoResult::Ok, "undo delete");
+    Machine* chest = w.machineAt({10, 0});
+    CHECK(chest && chest->isStorage() && chest->storage.amount(COPPER_ORE) == 37 && asMap(p.inventory.contents()) == invBefore,
+          "undo delete restores contents");
+    // belts turned in place with Shift (item kept) -> undo turns them back
+    b.placeBelts({0, 5}, {4, 5}, Dir::Right, false);
+    w.beltAt({2, 5})->item = IRON_ORE;
+    w.takeRecord();
+    b.placeBelts({0, 5}, {4, 5}, Dir::Left, true);
+    UndoRecord r3 = w.takeRecord();
+    CHECK(w.beltAt({2, 5})->dir == Dir::Left, "belts turned");
+    CHECK(b.undo(r3) == Builder::UndoResult::Ok && w.beltAt({2, 5})->dir == Dir::Right && w.beltAt({2, 5})->item == IRON_ORE,
+          "undo turn keeps the item");
+    // something built on the spot since -> refused, nothing changes
+    CHECK(b.deleteBeltAt({0, 5}, false), "delete belt");
+    UndoRecord r4 = w.takeRecord();
+    b.placeMachine(MachineType::Splitter, {0, 5}, Dir::Up, false, nullptr);
+    w.takeRecord();
+    auto inv4 = asMap(p.inventory.contents());
+    CHECK(b.undo(r4) == Builder::UndoResult::Blocked && asMap(p.inventory.contents()) == inv4, "undo into a blocked spot");
+    // redo: the inverse record puts it back again, and undo of that again
+    {
+        World rw; rw.seed = 1;
+        Player rp; rp.setCenter(-5000, -5000);
+        rp.inventory.tryAdd(IRON_INGOT, 200);
+        Builder rb(rw, rp);
+        rw.recordChanges = true;
+        int sid = rw.addMachine(makeMachine(MachineType::Storage, {0, 0}));
+        rw.machine(sid).storage.tryAdd(COPPER_ORE, 12);
+        rw.takeRecord();
+        auto inv0 = asMap(rp.inventory.contents());
+        rb.deleteMachineAt({0, 0});
+        UndoRecord del = rw.takeRecord(), redo, undoAgain;
+        CHECK(rb.undo(del, nullptr, &redo) == Builder::UndoResult::Ok && rw.machineAt({0, 0}), "undo for redo");
+        CHECK(rb.undo(redo, nullptr, &undoAgain) == Builder::UndoResult::Ok && !rw.machineAt({0, 0}), "redo deletes again");
+        CHECK(rb.undo(undoAgain) == Builder::UndoResult::Ok && rw.machineAt({0, 0}) && rw.machineAt({0, 0})->storage.amount(COPPER_ORE) == 12 &&
+              asMap(rp.inventory.contents()) == inv0, "undo / redo / undo is exact");
+    }
+    // a miner lying on its side: 3 x 2, saved and turned with blueprints
+    {
+        World mw; mw.seed = 1;
+        auto miner = makeMachine(MachineType::Miner, {0, 0}, Dir::Down, IRON_ORE);
+        CHECK(miner->w == 3 && miner->h == 2 && miner->dir == Dir::Down, "flat miner footprint");
+        CHECK(makeMachine(MachineType::Smelter, {0, 0}, Dir::Down)->dir == Dir::Right, "square machines have one direction");
+        Blueprint bp;
+        BlueprintMachine bm; bm.type = MachineType::Miner; bm.off = {0, 0}; bm.dir = Dir::Right;
+        bp.machines.push_back(bm); bp.w = 2; bp.h = 3;
+        Blueprint r = rotatedCW(bp);
+        CHECK(r.w == 3 && r.h == 2 && r.machines[0].dir == Dir::Down, "a turned blueprint lays the miner down");
+    }
+    std::printf("  undo: builds, deletes (with contents) and in-place turns come back exactly; redo too\n");
+}
+
+// Rotating / mirroring blueprints
+static Vec2i vec(int x, int y) { return {x, y}; }
+static void testBlueprintTransform() {
+    Blueprint bp;
+    bp.w = 4; bp.h = 3;
+    bp.belts.push_back({{0, 0}, Dir::Right});
+    bp.belts.push_back({{1, 0}, Dir::Down});
+    BlueprintMachine sp; sp.type = MachineType::Splitter; sp.off = {3, 2}; sp.dir = Dir::Up;
+    sp.sideFilters[0].enabled = true; sp.sideFilters[0].slots[0] = COAL;
+    bp.machines.push_back(sp);
+    Blueprint r = rotatedCW(bp);
+    CHECK(r.w == 3 && r.h == 4 && r.belts[0].off == vec(2, 0) && r.belts[0].dir == Dir::Down && r.machines[0].off == vec(0, 3) &&
+          r.machines[0].dir == Dir::Right, "rotate once");
+    Blueprint r4 = rotatedCW(bp, 4);
+    CHECK(r4.w == bp.w && r4.belts[1].off == bp.belts[1].off && r4.machines[0].off == bp.machines[0].off, "four turns = original");
+    Blueprint m = mirrored(bp);
+    CHECK(m.belts[0].off == vec(3, 0) && m.belts[0].dir == Dir::Left && m.machines[0].off == vec(0, 2) &&
+          m.machines[0].sideFilters[2].enabled && !m.machines[0].sideFilters[0].enabled, "mirror swaps sides and filters");
+    CHECK(m.cost() == bp.cost() && r.cost() == bp.cost(), "same cost");
+    std::printf("  blueprints turn and mirror (splitter filters swap sides)\n");
 }
 
 // ---------------------------------------------------------------------------
@@ -625,6 +730,8 @@ int main(int argc, char** argv) {
     testHandCraftingAndRecipeSwitch();
     std::printf("Item conservation\n");
     testConservationFuzz();
+    testUndo();
+    testBlueprintTransform();
     testBlueprints();
     testAreaDelete();
     testItemDeltas();

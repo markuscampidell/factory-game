@@ -61,6 +61,14 @@ struct MachineSpec {
     ItemAmounts cost;       // build cost (refunded on delete)
 };
 const MachineSpec& machineSpec(MachineType t);
+
+// Turning machines: a splitter has 4 directions; any other machine that is
+// not square (the miner, 2 x 3) has 2 - standing (Right, as in the spec) or
+// lying on its side (Down, w and h swapped); square machines have one.
+// normalizeMachineDir maps any direction to one of those.
+Dir normalizeMachineDir(MachineType t, Dir d);
+bool machineTurnable(MachineType t);          // has more than one direction
+Vec2i machineSize(MachineType t, Dir d);      // footprint in tiles for that direction
 bool machineTypeFromSave(const std::string& s, MachineType& out);
 
 // One input/output buffer of a producing machine: a 1x1 inventory that only
@@ -154,11 +162,39 @@ struct Chunk {
 };
 
 // ---------------------------------------------------------------------------
+// Undo records: what one player action changed (see World::recordChanges and
+// Builder::undo). `removed` keeps the full state of everything that was
+// removed or changed (contents included); `added` only says what is there
+// now (belt or machine type at a position).
+// ---------------------------------------------------------------------------
+struct ObjSnap {
+    bool belt = false;
+    Vec2i pos;
+    MachineType type = MachineType::Smelter;   // machines
+    Belt beltState;                            // belts (removed only)
+    std::shared_ptr<const Machine> machine;    // machines (removed only)
+    bool sameObject(const ObjSnap& o) const { return belt == o.belt && pos == o.pos && (belt || type == o.type); }
+};
+struct UndoRecord {
+    std::vector<ObjSnap> removed, added;
+    bool empty() const { return removed.empty() && added.empty(); }
+};
+
+// ---------------------------------------------------------------------------
 // World
 // ---------------------------------------------------------------------------
 class World {
 public:
     int64_t seed = 0;
+
+    // ---- undo recording ----
+    // While on, every belt / machine that is added or removed (and every
+    // one the builder changes in place, see noteChanged*) is written into
+    // the pending record; takeRecord() hands it over and starts a new one.
+    bool recordChanges = false;
+    UndoRecord takeRecord() { UndoRecord r = std::move(record_); record_ = {}; return r; }
+    void noteChangedBelt(int id);      // call BEFORE changing it in place
+    void noteChangedMachine(int id);
 
     void clear();
 
@@ -245,6 +281,9 @@ private:
 
     bool topologyDirty_ = true;
     uint64_t tickCount_ = 0;
+    UndoRecord record_;
+    void recordRemoved(ObjSnap snap);
+    void recordAdded(ObjSnap key);
 
     // Transport processing order, built by rebuildTransportOrder().
     // Nodes: belts are 0..B-1, splitters are B + machineId.

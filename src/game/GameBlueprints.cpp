@@ -16,7 +16,7 @@ const Color REACH_OUTSIDE{0, 0, 0, 90};
 
 std::string objects(int n) { return std::to_string(n) + (n == 1 ? " object" : " objects"); }
 
-constexpr float LIST_W = 560, LIST_H = 470, ROW_H = 68, LIST_TOP = 60;
+constexpr float LIST_W = 560, LIST_H = 470, ROW_H = 68, LIST_TOP = 96, SEARCH_Y = 50;
 constexpr float BOOK_H = 46, EMPTY_BOOK_H = 30, BOOK_INDENT = 28, DRAG_MIN = 6;
 } // namespace
 
@@ -24,6 +24,7 @@ constexpr float BOOK_H = 46, EMPTY_BOOK_H = 30, BOOK_INDENT = 28, DRAG_MIN = 6;
 // State changes
 // ---------------------------------------------------------------------------
 void GameScreen::startSelecting(bool forList) {
+    markerPlacing_ = false;
     closeAllPanels();
     mode_ = BuildMode::Building;
     placingBelt_ = false;
@@ -34,10 +35,11 @@ void GameScreen::startSelecting(bool forList) {
     bpPendingName_.clear();
     bpDragging_ = false;
     notify(forList ? "New blueprint: drag a rectangle over what you want to save"
-                   : "Copy: drag a rectangle over what you want to copy");
+                   : "Copy area: drag a rectangle over what you want to copy");
 }
 
 void GameScreen::startCutting() {
+    markerPlacing_ = false;
     closeAllPanels();
     mode_ = BuildMode::Deleting;
     placingBelt_ = false;
@@ -66,6 +68,7 @@ void GameScreen::finishCut(Vec2i end) {
 }
 
 void GameScreen::startPlacing(const Blueprint& bp) {
+    markerPlacing_ = false;
     closeAllPanels();
     mode_ = BuildMode::Building;
     placingBelt_ = false;
@@ -97,7 +100,7 @@ void GameScreen::finishSelection(Vec2i end) {
     }
     bp.name = "Clipboard";
     clipboard_ = bp;
-    notify("Copied " + objects(bp.count()) + " - click to place, Ctrl+V to paste again");
+    notify("Copied area: " + objects(bp.count()) + " - click to place, Ctrl+V to paste again");
     startPlacing(bp);
 }
 
@@ -232,6 +235,8 @@ bool GameScreen::overUi(Vector2 p) const {
 bool GameScreen::blueprintHandle(const Event& e) {
     if (bpSaveHandle(e)) return true;
     if (bpBookDialogHandle(e)) return true;
+    if (markerDialogHandle(e)) return true;
+    if (markerPlacingHandle(e)) return true;
     // delete confirmation (modal) - a blueprint, or a book with everything in it
     if (bpDeleteConfirm_) {
         DialogResult r = bpDeleteConfirm_->handle(e);
@@ -255,12 +260,29 @@ bool GameScreen::blueprintHandle(const Event& e) {
 
     if (e.type == EvType::KeyDown) {
         bool ctrl = ctrlDown();
+        // turning / mirroring what you hold (a copy keeps its new direction)
+        if (bpMode_ == BpMode::Placing && !ctrl && (e.key == KEY_R || e.key == KEY_T || e.key == KEY_G)) {
+            if (e.key == KEY_G) placing_ = mirrored(placing_);
+            else placing_ = rotatedCW(placing_, e.key == KEY_T ? 2 : shiftDown() ? 3 : 1);
+            if (placing_.name == "Clipboard") clipboard_ = placing_;
+            return true;
+        }
+        // undo: Ctrl + Z - also KEY_Y, because raylib names keys by their place
+        // on a US keyboard and on a German (QWERTZ) keyboard Z sits where Y is
+        if (ctrl && (e.key == KEY_Z || e.key == KEY_Y)) { undoLast(); return true; }
+        if (ctrl && e.key == KEY_R) { redoLast(); return true; }   // (plain R still rotates)
+        if (!ctrl && e.key == KEY_P) {   // map marker under the mouse: rename it, else a new one
+            Vector2 m = ui::mouse();
+            int idx = markerAt(m);
+            openMarkerDialog(idx >= 0 ? markers_[size_t(idx)].tile : screenToTile(m), idx);
+            return true;
+        }
         if (ctrl && e.key == KEY_C) { startSelecting(false); return true; }
         // Ctrl+X: area delete (handled here so it never toggles delete mode off)
         if (ctrl && e.key == KEY_X) { startCutting(); return true; }
         if (ctrl && e.key == KEY_B) { startSelecting(true); return true; }
         if (ctrl && e.key == KEY_V) {
-            if (clipboard_.empty()) notify("The clipboard is empty - press Ctrl+C first");
+            if (clipboard_.empty()) notify("Nothing copied yet - use Copy area (Ctrl+C) first");
             else startPlacing(clipboard_);
             return true;
         }
@@ -307,6 +329,8 @@ bool GameScreen::blueprintHandle(const Event& e) {
             Rectangle addBook{r.x + 12, r.y + 6, 190, 32};
             if (inRect(add, e.pos)) { startSelecting(true); return true; }
             if (inRect(addBook, e.pos)) { openBookDialog(0); return true; }
+            bpSearch_.rect = {r.x + 14, r.y + SEARCH_Y, r.width - 28, 32};
+            if (bpSearch_.handle(e)) { bpListScroll_ = 0; return true; }
             if (inRect(close, e.pos)) { closePanel(Panel::Blueprints); return true; }
             auto rows = bpListRows();
             const BpRow* row = bpRowAt(rows, e.pos);
@@ -482,13 +506,10 @@ void GameScreen::drawBlueprintMode() {
     }
     for (size_t i = 0; i < placing_.machines.size(); ++i) {
         const BlueprintMachine& m = placing_.machines[i];
-        const MachineSpec& s = machineSpec(m.type);
+        Vec2i s = machineSize(m.type, m.dir);
         Vec2i p = tl + m.off;
-        Rectangle r{float(p.x * CELL_SIZE), float(p.y * CELL_SIZE), float(s.w * CELL_SIZE), float(s.h * CELL_SIZE)};
-        if (const Texture2D* tex = assets::machine(m.type))
-            drawTexture(*tex, r, Color{255, 255, 255, 140}, m.type == MachineType::Splitter ? 90.0f * float(int(m.dir)) : 0.0f);
-        else
-            DrawRectangleRec(r, Color{150, 150, 170, 120});
+        Rectangle r{float(p.x * CELL_SIZE), float(p.y * CELL_SIZE), float(s.x * CELL_SIZE), float(s.y * CELL_SIZE)};
+        assets::drawMachine(m.type, m.dir, r, Color{255, 255, 255, 140});
         if (const Recipe* rc = findRecipe(m.recipeId); showOutputs_ && rc && !rc->outputs.empty())   // Alt mode
             drawItemIcon(rc->outputs[0].first, {r.x + r.width / 2 - 16, r.y + r.height / 2 - 16, 32, 32}, 160);
         if (c.machines[i] == PlaceStatus::Blocked) DrawRectangleRec(r, red);
@@ -505,44 +526,77 @@ void GameScreen::drawBlueprintMode() {
 // Drawing (screen space): "Needs: ..." while holding something to build
 // ---------------------------------------------------------------------------
 void GameScreen::drawCostInfo() {
-    if (mode_ != BuildMode::Building || bpSaveOpen_) return;
+    if (bpSaveOpen_) return;
+    auto hintBox = [&](const std::string& msg, float y) {
+        Rectangle h = centeredRect(ui::screenW() / 2, y, measure(msg, 16).x + 24, 28);
+        fillRound(h, 10, Color{ui::PANEL_BG.r, ui::PANEL_BG.g, ui::PANEL_BG.b, 210});
+        textCentered(msg, h.x + h.width / 2, h.y + 14, 16, ui::TEXT_DIM);
+    };
+    if (mode_ == BuildMode::Deleting && bpMode_ == BpMode::None) {
+        hintBox("Drag to delete one at a time - hold Shift to delete a whole connected belt - Delete area for many", 120);
+        return;
+    }
+    if (mode_ != BuildMode::Building) return;
     // only what is actually new: identical objects underneath are kept for free
     ItemAmounts cost;
+    PlaceStatus st = PlaceStatus::Ok;
     bool replace = shiftDown();
     if (bpMode_ == BpMode::Placing) {
         auto check = builder_.checkBlueprint(placing_, Builder::blueprintTopLeft(placing_, mouseTile()), replace);
-        if (check.status == PlaceStatus::OutOfReach) {
-            std::string msg = "Outside the square around you - move closer";
-            Rectangle r = centeredRect(ui::screenW() / 2, 120, measure(msg, 18).x + 28, 32);
-            fillRound(r, 10, ui::PANEL_BG);
-            textCentered(msg, r.x + r.width / 2, r.y + 16, 18, Color{170, 20, 20, 255}, true);
-            return;
-        }
+        st = check.status;
         cost = check.cost;
     } else if (bpMode_ != BpMode::None) {
         return;
     } else if (selected_ == Buildable::Belt) {
         // one belt, or the whole line while dragging
         Vec2i mt = mouseTile();
-        builder_.beltAffordability(builder_.planBelts(placingBelt_ ? beltStart_ : mt, mt, beltDir_), &cost);
+        st = builder_.beltAffordability(builder_.planBelts(placingBelt_ ? beltStart_ : mt, mt, beltDir_), &cost);
     } else {
-        builder_.checkMachine(toMachine(selected_), mouseTile(), Dir(splitterRot_), replace, &cost);
+        st = builder_.checkMachine(toMachine(selected_), mouseTile(), Dir(splitterRot_), replace, &cost);
     }
-    bool enough = player_.inventory.hasEnough(cost);
-    std::string line = "Needs: " + costText(cost);
-    Color c = enough ? Color{20, 90, 30, 255} : Color{170, 20, 20, 255};
-    float w = measure(line, 18).x + 28;
-    Rectangle r = centeredRect(ui::screenW() / 2, 120, w, 32);
-    fillRound(r, 10, ui::PANEL_BG);
-    textCentered(line, r.x + r.width / 2, r.y + 16, 18, c, true);
-
-    // belts and splitters can be turned: say how, right under "Needs: ..."
-    if (bpMode_ == BpMode::None && (selected_ == Buildable::Belt || selected_ == Buildable::Splitter)) {
-        std::string hint = "R: rotate    Shift + R: rotate back    T: turn around";
-        Rectangle h = centeredRect(ui::screenW() / 2, 156, measure(hint, 16).x + 24, 28);
-        fillRound(h, 10, Color{ui::PANEL_BG.r, ui::PANEL_BG.g, ui::PANEL_BG.b, 210});
-        textCentered(hint, h.x + h.width / 2, h.y + 14, 16, ui::TEXT_DIM);
+    float y = 120;
+    if (st == PlaceStatus::OutOfReach) {
+        std::string msg = "Outside the square around you - move closer";
+        Rectangle r = centeredRect(ui::screenW() / 2, y, measure(msg, 18).x + 28, 32);
+        fillRound(r, 10, ui::PANEL_BG);
+        textCentered(msg, r.x + r.width / 2, r.y + 16, 18, Color{170, 20, 20, 255}, true);
+    } else {
+        bool enough = player_.inventory.hasEnough(cost);
+        std::string line = "Needs: " + costText(cost);
+        Color c = enough ? Color{20, 90, 30, 255} : Color{170, 20, 20, 255};
+        Rectangle r = centeredRect(ui::screenW() / 2, y, measure(line, 18).x + 28, 32);
+        fillRound(r, 10, ui::PANEL_BG);
+        textCentered(line, r.x + r.width / 2, r.y + 16, 18, c, true);
+        // why the ghost has its colour (same colours as the ghost)
+        const char* reason = nullptr;
+        Color swatch{};
+        switch (st) {
+            case PlaceStatus::Blocked: reason = "Something is in the way - hold Shift to replace it"; swatch = {255, 0, 0, 255}; break;
+            case PlaceStatus::NoSpace: reason = "Not enough inventory space for what gets replaced"; swatch = {255, 165, 0, 255}; break;
+            case PlaceStatus::NoFunds: reason = "Not enough items in your inventory"; swatch = {255, 255, 0, 255}; break;
+            case PlaceStatus::NoOre: reason = "A miner needs ore under it"; swatch = {128, 0, 128, 255}; break;
+            case PlaceStatus::Undiscovered: reason = "You haven't discovered this area yet"; swatch = {20, 20, 20, 255}; break;
+            default: break;
+        }
+        if (reason) {
+            y += 36;
+            float tw = measure(reason, 16).x;
+            Rectangle h = centeredRect(ui::screenW() / 2, y, tw + 24 + 22, 28);
+            fillRound(h, 10, ui::PANEL_BG);
+            Rectangle sw{h.x + 12, h.y + 7, 14, 14};
+            DrawRectangleRec(sw, swatch);
+            lineRect(sw, 1, rgba(40, 40, 40));
+            text(reason, sw.x + 22, h.y + 14 - 9, 16, ui::TEXT);
+        }
     }
+    // turning: belts, splitters and anything held from a copy / blueprint
+    y += 36;
+    if (bpMode_ == BpMode::Placing)
+        hintBox("R: rotate    Shift + R: rotate back    T: turn around    G: mirror left / right", y);
+    else if (selected_ == Buildable::Belt || selected_ == Buildable::Splitter)
+        hintBox("R: rotate    Shift + R: rotate back    T: turn around", y);
+    else if (machineTurnable(toMachine(selected_)))
+        hintBox("R: turn it (standing / lying)", y);
 }
 
 // ---------------------------------------------------------------------------
@@ -553,7 +607,7 @@ void GameScreen::drawBlueprintList() {
     if ((bpMode_ == BpMode::Selecting || bpMode_ == BpMode::Cutting) && !bpSaveOpen_) {
         std::string line1, line2;
         if (bpMode_ == BpMode::Selecting) {
-            line1 = bpForList_ ? "New blueprint: drag a rectangle" : "Copy: drag a rectangle";
+            line1 = bpForList_ ? "New blueprint: drag a rectangle" : "Copy area: drag a rectangle";
             line1 += " (max " + std::to_string(MAX_SELECTION) + " x " + std::to_string(MAX_SELECTION) + ")";
             line2 = mapMode() ? "Right click / ESC: cancel" : "Right click: back to building   ESC: cancel";
         } else {
@@ -566,7 +620,7 @@ void GameScreen::drawBlueprintList() {
         textCentered(line1, r.x + r.width / 2, r.y + 15, 18, ui::TEXT, true);
         textCentered(line2, r.x + r.width / 2, r.y + 37, 16, ui::TEXT_DIM);
     }
-    if (!bpListOpen_) return;   // (the save dialog is drawn by drawModals)
+    if (!bpListOpen_) { bpSearch_.clear(); return; }   // (the save dialog is drawn by drawModals)
     Rectangle r = bpListRect();
     drawPanel(r, "Blueprints");
     Rectangle add{panelCloseRect(r).x - 10 - 90, r.y + 6, 90, 32};   // left of the X
@@ -574,8 +628,14 @@ void GameScreen::drawBlueprintList() {
 
     drawButton({r.x + 12, r.y + 6, 190, 32}, "Add blueprint book", ui::BTN, 16);
 
+    bpSearch_.rect = {r.x + 14, r.y + SEARCH_Y, r.width - 28, 32};
+    bpSearch_.draw(GetFrameTime());
     float top = r.y + LIST_TOP;
     Rectangle viewport{r.x, top, r.width, r.y + r.height - 8 - top};
+    if (!bpSearch_.text().empty() && bpListRows().empty()) {
+        textCentered("No blueprint or book matches", r.x + r.width / 2, top + 40, 18, ui::TEXT_DIM);
+        return;
+    }
     if (blueprints_.empty() && bpBooks_.empty()) {
         textCentered("No blueprints yet.", r.x + r.width / 2, top + 60, 20, BLACK);
         textCentered("Press '+ Add' or Ctrl + B and drag over your machines.", r.x + r.width / 2, top + 90, 16, ui::TEXT_DIM);
@@ -593,7 +653,7 @@ void GameScreen::drawBlueprintList() {
         Rectangle del{rr.x + rr.width - 8 - 70, rr.y + (rr.height - 32) / 2, 70, 32};
         if (row.kind == BpRowKind::Book) {
             const BlueprintBook& bk = bpBooks_[size_t(row.index)];
-            bool open = bpFold_.isOpen(bookKey(bk.id));
+            bool open = bpFold_.isOpen(bookKey(bk.id)) || !bpSearch_.text().empty();   // (open while searching)
             FoldHeaderStyle st;
             st.bg = rgba(150, 147, 200, 170);
             Rectangle rename{del.x - 8 - 80, del.y, 80, 32};
@@ -653,16 +713,23 @@ void GameScreen::saveBlueprintList() { save::saveBlueprints(blueprints_, bpBooks
 // Books first (each followed by its blueprints when it is open), then the
 // blueprints that are in no book.
 std::vector<GameScreen::BpRow> GameScreen::bpListRows() const {
+    // While searching: books whose name matches show everything inside,
+    // other books only their matching blueprints (and are shown open); the
+    // rest is hidden.
     std::vector<BpRow> rows;
     float y = 0;
+    bool searching = !bpSearch_.text().empty();
     for (size_t b = 0; b < bpBooks_.size(); ++b) {
         int id = bpBooks_[b].id;
+        bool bookMatch = bpSearch_.matches(bpBooks_[b].name);
+        auto shownInBook = [&](const Blueprint& bp) { return bp.book == id && (bookMatch || bpSearch_.matches(bp.name)); };
+        if (searching && !bookMatch && std::none_of(blueprints_.begin(), blueprints_.end(), shownInBook)) continue;
         rows.push_back({BpRowKind::Book, int(b), id, y, BOOK_H, 0});
         y += BOOK_H;
-        if (!bpFold_.isOpen(bookKey(id))) continue;
+        if (!searching && !bpFold_.isOpen(bookKey(id))) continue;
         bool any = false;
         for (size_t i = 0; i < blueprints_.size(); ++i) {
-            if (blueprints_[i].book != id) continue;
+            if (!shownInBook(blueprints_[i])) continue;
             rows.push_back({BpRowKind::Blueprint, int(i), id, y, ROW_H, BOOK_INDENT});
             y += ROW_H;
             any = true;
@@ -673,7 +740,7 @@ std::vector<GameScreen::BpRow> GameScreen::bpListRows() const {
         }
     }
     for (size_t i = 0; i < blueprints_.size(); ++i) {
-        if (blueprints_[i].book != 0) continue;
+        if (blueprints_[i].book != 0 || !bpSearch_.matches(blueprints_[i].name)) continue;
         rows.push_back({BpRowKind::Blueprint, int(i), 0, y, ROW_H, 0});
         y += ROW_H;
     }
@@ -803,3 +870,86 @@ void GameScreen::openConfigure(int index) {
     Rectangle r = bpSaveRect();
     bpNameInput_ = TextInput({r.x + 30, r.y + 110, r.width - 60, 40}, bpPending_.name);
 }
+
+// ---------------------------------------------------------------------------
+// Map markers (P): name dialog
+// ---------------------------------------------------------------------------
+Rectangle GameScreen::markerDialogRect() const {
+    return centeredRect(std::floor(ui::screenW() / 2), std::floor(ui::screenH() / 2) - 40, 420, 210);
+}
+
+void GameScreen::openMarkerDialog(Vec2i tile, int editIndex) {
+    markerTile_ = tile;
+    markerEdit_ = editIndex;
+    std::string name = editIndex >= 0 ? markers_[size_t(editIndex)].name : "Marker " + std::to_string(markers_.size() + 1);
+    Rectangle r = markerDialogRect();
+    markerNameInput_ = TextInput({r.x + 30, r.y + 76, r.width - 60, 40}, name);
+    markerDialogOpen_ = true;
+}
+
+void GameScreen::submitMarkerDialog() {
+    std::string name = markerNameInput_ ? markerNameInput_->text : "";
+    size_t a = name.find_first_not_of(' ');
+    if (a == std::string::npos) return;   // needs a name
+    name = name.substr(a, name.find_last_not_of(' ') - a + 1);
+    if (markerEdit_ >= 0 && markerEdit_ < int(markers_.size())) markers_[size_t(markerEdit_)].name = name;
+    else markers_.push_back({markerTile_, name});
+    markerDialogOpen_ = false;
+    markerNameInput_.reset();
+}
+
+bool GameScreen::markerDialogHandle(const Event& e) {
+    if (!markerDialogOpen_) return false;
+    Rectangle r = markerDialogRect();
+    Rectangle cancelBtn{r.x + 30, r.y + r.height - 58, 110, 40};
+    Rectangle deleteBtn{r.x + r.width / 2 - 55, r.y + r.height - 58, 110, 40};
+    Rectangle okBtn{r.x + r.width - 30 - 110, r.y + r.height - 58, 110, 40};
+    auto close = [&]() { markerDialogOpen_ = false; markerNameInput_.reset(); };
+    if (e.type == EvType::MouseDown && (!inRect(r, e.pos) || inRect(panelCloseRect(r), e.pos))) { close(); return true; }
+    if (e.type == EvType::MouseDown && e.button == MB_LEFT) {
+        if (inRect(cancelBtn, e.pos)) { close(); return true; }
+        if (inRect(okBtn, e.pos)) { submitMarkerDialog(); return true; }
+        if (markerEdit_ >= 0 && inRect(deleteBtn, e.pos)) {
+            if (markerEdit_ < int(markers_.size())) markers_.erase(markers_.begin() + markerEdit_);
+            close();
+            return true;
+        }
+    }
+    if (markerNameInput_) {
+        markerNameInput_->handle(e);
+        if (markerNameInput_ && markerNameInput_->cancelled) { close(); return true; }
+        if (markerNameInput_ && markerNameInput_->submitted) { markerNameInput_->submitted = false; submitMarkerDialog(); }
+    }
+    return true;   // modal
+}
+
+void GameScreen::drawMarkerDialog() {
+    if (!markerDialogOpen_) return;
+    Rectangle r = markerDialogRect();
+    drawModalShade();
+    drawPanel(r, markerEdit_ >= 0 ? "Map marker" : "New map marker");
+    text("Name:", r.x + 30, r.y + 56, 14, ui::TEXT_DIM);
+    if (markerNameInput_) {
+        markerNameInput_->update(GetFrameTime());
+        markerNameInput_->draw();
+    }
+    drawButton({r.x + 30, r.y + r.height - 58, 110, 40}, "Cancel", ui::BTN);
+    if (markerEdit_ >= 0) drawButton({r.x + r.width / 2 - 55, r.y + r.height - 58, 110, 40}, "Delete", ui::BTN_DANGER);
+    drawButton({r.x + r.width - 30 - 110, r.y + r.height - 58, 110, 40}, markerEdit_ >= 0 ? "Rename" : "Place", ui::BTN_OK);
+}
+
+// Holding a map marker ("Add map marker" button): left click on the world
+// places it (then the name dialog opens), right click / ESC put it back.
+// Clicks on buttons, the hotbar or panels go on as normal and drop it.
+bool GameScreen::markerPlacingHandle(const Event& e) {
+    if (!markerPlacing_) return false;
+    if (e.type == EvType::KeyDown && e.key == KEY_ESCAPE) { markerPlacing_ = false; return true; }
+    if (e.type != EvType::MouseDown) return false;
+    if (e.button == MB_RIGHT) { markerPlacing_ = false; return true; }
+    if (e.button != MB_LEFT) return false;
+    if (overUi(e.pos)) { markerPlacing_ = false; return false; }
+    markerPlacing_ = false;
+    openMarkerDialog(screenToTile(e.pos), -1);
+    return true;
+}
+

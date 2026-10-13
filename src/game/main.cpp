@@ -56,10 +56,10 @@ void frame(App& app) {
                 app.game = std::make_unique<GameScreen>();
                 app.game->newGame(a.name);
                 break;
-            } else if (a.kind == MenuAction::LoadGame) {
+            } else if (a.kind == MenuAction::LoadGame || a.kind == MenuAction::LoadAutosave) {
                 auto g = std::make_unique<GameScreen>();
                 std::string err;
-                if (g->loadGame(a.name, &err)) { app.game = std::move(g); break; }
+                if (g->loadGame(a.name, &err, a.kind == MenuAction::LoadAutosave)) { app.game = std::move(g); break; }
                 menu.refresh();
                 menu.showMessage("Could not load '" + a.name + "': " + err);
             }

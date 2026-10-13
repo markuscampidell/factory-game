@@ -62,6 +62,7 @@ GameScreen::GameScreen() {
     blueprints_ = save::loadBlueprints(&bpBooks_);
     builder_.requireExplored = true;   // no building in chunks you haven't seen yet
     builder_.blueprintReach = 4;       // blueprints / copies: 9 x 9 chunks around the player
+    world_.recordChanges = true;       // for undo (Ctrl + Z)
 }
 
 GameScreen::~GameScreen() {
@@ -179,14 +180,25 @@ void GameScreen::enterMapMode() {
 void GameScreen::newGame(const std::string& name) {
     CameraState cs;
     save::newGame(world_, player_, cs, name);
+    world_.takeRecord();   // building the world isn't something to undo
+    undoStack_.clear();
+    redoStack_.clear();
+    markers_.clear();
     saveName_ = name;
+    playSeconds_ = 0;
     cam_.centerOn(player_.rect.cx(), player_.rect.cy());
     targetZoom_ = cam_.zoom;
 }
 
-bool GameScreen::loadGame(const std::string& name, std::string* error) {
+bool GameScreen::loadGame(const std::string& name, std::string* error, bool fromAutosave) {
     CameraState cs;
-    if (!save::loadGame(world_, player_, cs, name, error)) return false;
+    if (!save::loadGame(world_, player_, cs, fromAutosave ? save::autosaveName(name) : name, error)) return false;
+    if (fromAutosave) save::setLastOpened(name);   // Continue keeps meaning "name"
+    world_.takeRecord();   // loading isn't something to undo
+    undoStack_.clear();
+    redoStack_.clear();
+    markers_ = cs.markers;
+    playSeconds_ = cs.playSeconds;
     saveName_ = name;
     cam_.zoom = targetZoom_ = std::clamp(cs.zoom, MIN_ZOOM, MAX_ZOOM);
     zoomToPlayer_ = false;
@@ -197,7 +209,7 @@ bool GameScreen::loadGame(const std::string& name, std::string* error) {
 }
 
 void GameScreen::saveNow(const std::string& name) {
-    CameraState cs{cam_.x, cam_.y, true, cam_.zoom, showOutputs_};
+    CameraState cs{cam_.x, cam_.y, true, cam_.zoom, showOutputs_, markers_, playSeconds_};
     std::string err;
     if (!save::saveGame(world_, player_, cs, name, &err)) notify("Saving failed: " + err);
 }
@@ -227,6 +239,14 @@ void GameScreen::update(float dt) {
         }
         if (steps == 10) accumulator_ = 0; // can't keep up: slow down rather than spiral
         interp_ = float(accumulator_ / step);
+        // play time + autosave (game time; paused while the Game Menu / Controls are open)
+        playSeconds_ += std::min(double(dt), 0.25);
+        autosaveTimer_ += dt;
+        if (autosaveTimer_ >= AUTOSAVE_SECONDS) {
+            autosaveTimer_ = 0;
+            saveNow(autosaveName());
+            notify("Autosaved ('" + autosaveName() + "')");
+        }
         stepZoom(dt);
         perFrame();
     }
@@ -234,10 +254,14 @@ void GameScreen::update(float dt) {
 
 void GameScreen::tick() {
     int ix = 0, iy = 0;
-    if (IsKeyDown(KEY_RIGHT) || IsKeyDown(KEY_D)) ix += 1;
-    if (IsKeyDown(KEY_LEFT) || IsKeyDown(KEY_A)) ix -= 1;
-    if (IsKeyDown(KEY_DOWN) || IsKeyDown(KEY_S)) iy += 1;
-    if (IsKeyDown(KEY_UP) || IsKeyDown(KEY_W)) iy -= 1;
+    // no walking while typing (search box, a name in a dialog)
+    bool typing = focusedSearch() != nullptr || anyModalOpen();
+    if (!typing) {
+        if (IsKeyDown(KEY_RIGHT) || IsKeyDown(KEY_D)) ix += 1;
+        if (IsKeyDown(KEY_LEFT) || IsKeyDown(KEY_A)) ix -= 1;
+        if (IsKeyDown(KEY_DOWN) || IsKeyDown(KEY_S)) iy += 1;
+        if (IsKeyDown(KEY_UP) || IsKeyDown(KEY_W)) iy -= 1;
+    }
     if (mapMode()) {
         // map view: the player stands still, the keys pan the map instead
         player_.update(world_, 0, 0);
@@ -322,25 +346,25 @@ void GameScreen::copyAt(Vector2 p) {
     if (r > 0) {
         const Belt& b = world_.belt(r - 1);
         copiedBeltFilter_ = b.filter;
-        floatText(float(b.pos.x * CELL_SIZE + CELL_SIZE / 2), float(b.pos.y * CELL_SIZE), "Copied belt filter", ok);
+        floatText(float(b.pos.x * CELL_SIZE + CELL_SIZE / 2), float(b.pos.y * CELL_SIZE), "Copied settings: belt filter", ok);
     } else if (r < 0) {
         Machine& m = world_.machine(-r - 1);
         RectF rc = m.pixelRect();
         if (m.isSplitter()) {
             copiedSplitterFilters_ = m.sideFilters;
-            floatText(rc.cx(), rc.top(), "Copied splitter filters", ok);
+            floatText(rc.cx(), rc.top(), "Copied settings: splitter filters", ok);
         } else if (m.recipeChoices() && m.recipe) {
             copiedRecipe_ = m.recipe;
-            floatText(rc.cx(), rc.top(), "Copied recipe: " + m.recipe->name, ok);
+            floatText(rc.cx(), rc.top(), "Copied settings: recipe " + m.recipe->name, ok);
         } else {
-            floatText(rc.cx(), rc.top(), "Nothing to copy here", bad);
+            floatText(rc.cx(), rc.top(), "No settings to copy here", bad);
         }
     }
 }
 
 // Every pasted object gets its own message that floats up and fades out.
 void GameScreen::pasteSuccess(float wx, float wy, const std::string& /*kind*/, const std::string& what) {
-    floatText(wx, wy, "Pasted " + what, Color{120, 255, 140, 255});
+    floatText(wx, wy, "Pasted settings: " + what, Color{120, 255, 140, 255});
 }
 
 void GameScreen::pasteAt(Vector2 p) {
@@ -351,7 +375,7 @@ void GameScreen::pasteAt(Vector2 p) {
     if (r > 0) {   // belt
         Belt& b = world_.belt(r - 1);
         float wx = float(b.pos.x * CELL_SIZE + CELL_SIZE / 2), wy = float(b.pos.y * CELL_SIZE);
-        if (!copiedBeltFilter_) { floatText(wx, wy, "No belt filter copied (Shift + Right Click a belt)", bad); return; }
+        if (!copiedBeltFilter_) { floatText(wx, wy, "No belt settings copied (Shift + Right Click a belt)", bad); return; }
         b.filter = *copiedBeltFilter_;
         pasteSuccess(wx, wy, "belt", "belt filter");
         return;
@@ -360,12 +384,12 @@ void GameScreen::pasteAt(Vector2 p) {
     RectF rc = m.pixelRect();
     float wx = rc.cx(), wy = rc.top();
     if (m.isSplitter()) {
-        if (!copiedSplitterFilters_) { floatText(wx, wy, "No splitter filters copied (Shift + Right Click a splitter)", bad); return; }
+        if (!copiedSplitterFilters_) { floatText(wx, wy, "No splitter settings copied (Shift + Right Click a splitter)", bad); return; }
         m.sideFilters = *copiedSplitterFilters_;
         pasteSuccess(wx, wy, "splitter", "splitter filters");
         return;
     }
-    if (!copiedRecipe_) { floatText(wx, wy, "No recipe copied (Shift + Right Click a machine)", bad); return; }
+    if (!copiedRecipe_) { floatText(wx, wy, "No machine settings copied (Shift + Right Click a machine)", bad); return; }
     const auto* choices = m.recipeChoices();
     if (!choices || std::find(choices->begin(), choices->end(), copiedRecipe_) == choices->end()) {
         floatText(wx, wy, std::string(machineSpec(m.type).name) + " can't use the " + copiedRecipe_->name + " recipe", bad);
@@ -397,6 +421,7 @@ void GameScreen::floatText(float wx, float wy, const std::string& s, Color c) {
 }
 
 void GameScreen::perFrame() {
+    if (!IsMouseButtonDown(MOUSE_BUTTON_LEFT)) commitUndo();   // a whole drag = one undo step
     validatePanels();
     updatePasteHold();
 
@@ -441,6 +466,14 @@ void GameScreen::validatePanels() {
 // ---------------------------------------------------------------------------
 void GameScreen::handle(const Event& e) {
     if (e.type == EvType::MouseUp && e.button == MB_LEFT) justPlaced_ = false;
+    // a search box with the focus gets every key; a click elsewhere drops it
+    if (SearchBox* sb = focusedSearch(); sb && (e.type == EvType::KeyDown || e.type == EvType::Text)) {
+        sb->handle(e);
+        return;
+    }
+    if (e.type == EvType::MouseDown)
+        for (SearchBox* sb : {&craftSearch_, &pickerSearch_, &bpSearch_, &machineSearch_})
+            if (sb->focused() && !inRect(sb->rect, e.pos)) sb->unfocus();
     // Alt toggles the machine outputs when it's released on its own
     // (so Alt+Tab or Alt+something else doesn't toggle it)
     if (e.type == EvType::KeyDown) altClean_ = e.key == KEY_LEFT_ALT || e.key == KEY_RIGHT_ALT;
@@ -506,10 +539,9 @@ void GameScreen::handleKeys(const Event& e) {
 void GameScreen::handleMouse(const Event& e) {
     if (e.type == EvType::Wheel) {
         if (craftOpen_) {
-            Rectangle r = craftRect();
-            Rectangle viewport{r.x, r.y + 40, r.width - 20, (r.y + r.height - 320) - (r.y + 40)};
+            Rectangle viewport = craftListViewport();
             if (inRect(viewport, e.pos)) {
-                float content = float(handcraftRecipes().size()) * 45;
+                float content = float(craftVisibleRecipes().size()) * 45;
                 craftScroll_ = clampScroll(craftScroll_ - e.wheel * 40, content, viewport.height);
                 return;
             }
@@ -550,6 +582,7 @@ void GameScreen::toggleCrafting() {
 // Build state
 // ---------------------------------------------------------------------------
 void GameScreen::resetBuildState() {
+    markerPlacing_ = false;
     bpTargetBook_ = 0;
     bpConfigIndex_ = -1;
     bpPendingName_.clear();
@@ -562,6 +595,7 @@ void GameScreen::resetBuildState() {
 }
 
 void GameScreen::select(Buildable b) {
+    markerPlacing_ = false;
     if (mapMode()) { notify("Zoom in to build"); return; }
     bpMode_ = BpMode::None;
     bpDragging_ = false;
@@ -572,6 +606,7 @@ void GameScreen::select(Buildable b) {
 }
 
 void GameScreen::toggleDelete() {
+    markerPlacing_ = false;
     bpMode_ = BpMode::None;
     bpDragging_ = false;
     if (mapMode()) { mode_ = BuildMode::None; notify("Zoom in to build or delete"); return; }
@@ -586,6 +621,8 @@ void GameScreen::enterBuild() {
 
 void GameScreen::rotateSelected(int steps) {
     if (selected_ == Buildable::Splitter) splitterRot_ = floorMod(splitterRot_ + steps, 4);
+    else if (selected_ != Buildable::Belt && machineTurnable(toMachine(selected_)))
+        splitterRot_ = floorMod(splitterRot_ + steps, 2);   // standing (0) / lying (1); T changes nothing
     else if (selected_ == Buildable::Belt) beltDir_ = rotateCW(beltDir_, steps);
 }
 
@@ -703,14 +740,14 @@ bool GameScreen::pipetteClick(const Event& e) {
     } else {
         const Machine& m = world_.machine(-r - 1);
         select(toBuildable(m.type));
-        if (m.isSplitter()) splitterRot_ = int(m.dir);
+        if (m.isSplitter() || machineTurnable(m.type)) splitterRot_ = int(m.dir) % (m.isSplitter() ? 4 : 2);
         RectF rc = m.pixelRect();
         wx = rc.cx();
         wy = rc.top();
         name = machineSpec(m.type).name;
     }
     if (mode_ != BuildMode::Building) return true;   // select() refused
-    floatText(wx, wy, "Copied " + name, Color{120, 255, 140, 255});
+    floatText(wx, wy, "Picked " + name, Color{120, 255, 140, 255});
     return true;
 }
 
@@ -835,6 +872,10 @@ void GameScreen::closeAllPanels() {
     bpListOpen_ = false;
     bpDeleteConfirm_.reset();
     bpDragIndex_ = -1;
+    craftSearch_.clear();
+    pickerSearch_.clear();
+    bpSearch_.clear();
+    machineSearch_.clear();
     bpBookDialogOpen_ = false;
     bpBookNameInput_.reset();
 }
@@ -927,7 +968,10 @@ std::string GameScreen::hotbarTooltip(Vector2 p) const {
         std::string name = belt ? "Belt" : machineSpec(toMachine(s.b)).name;
         const ItemAmounts& cost = belt ? beltBuildCost() : machineSpec(toMachine(s.b)).cost;
         std::string tip = name + " (" + key + ") - " + costText(cost);
-        if (belt || s.b == Buildable::Splitter) tip += " - R / T to rotate";
+        if (belt || s.b == Buildable::Splitter)   // one item per tile every BELT_TICKS_PER_TILE ticks
+            tip += " - " + std::to_string(60 * TICKS_PER_SECOND / BELT_TICKS_PER_TILE) + " items/min - R / T to rotate";
+        else if (machineTurnable(toMachine(s.b)))
+            tip += " - R to turn it";
         return tip;
     }
     return "";
@@ -938,8 +982,10 @@ void GameScreen::drawHotbar() {
     for (int i = 0; i < HOTBAR_N; ++i) {
         Rectangle r = rs[size_t(i)];
         const HotbarSlot& s = HOTBAR[i];
-        bool active = (s.kind == 2 && mode_ == BuildMode::Deleting) || (s.kind == 1 && mode_ == BuildMode::None) ||
-                      (s.kind == 0 && mode_ == BuildMode::Building && selected_ == s.b);
+        // (while copying / pasting / area deleting no slot is selected)
+        bool single = bpMode_ == BpMode::None;
+        bool active = (single && s.kind == 2 && mode_ == BuildMode::Deleting) || (s.kind == 1 && mode_ == BuildMode::None) ||
+                      (single && s.kind == 0 && mode_ == BuildMode::Building && selected_ == s.b);
         drawButtonBase(r, active ? ui::ACTIVE_SLOT : rgba(55, 55, 55));
         lineRound(r, 8, 2, rgba(20, 20, 20));
         Rectangle inner{r.x + 8, r.y + 8, r.width - 16, r.height - 16};
@@ -967,4 +1013,66 @@ void GameScreen::drawHotbar() {
         text(std::to_string(i + 1), r.x + 4, r.y + 2, 13, WHITE, true);
         if (mapMode() && s.kind != 1) fillRound(r, 8, Color{20, 20, 20, 160}); // unavailable in map view
     }
+}
+
+// ---------------------------------------------------------------------------
+// Undo (Ctrl + Z)
+// ---------------------------------------------------------------------------
+void GameScreen::commitUndo() {
+    UndoRecord r = world_.takeRecord();
+    if (r.empty()) return;
+    undoStack_.push_back(std::move(r));
+    if (undoStack_.size() > UNDO_MAX) undoStack_.erase(undoStack_.begin());
+    redoStack_.clear();   // something new happened: the old "future" is gone
+}
+
+void GameScreen::undoLast() {
+    commitUndo();
+    if (undoStack_.empty()) { notify("Nothing to undo"); return; }
+    applyUndo(undoStack_, redoStack_, "undo");
+}
+
+void GameScreen::redoLast() {
+    commitUndo();
+    if (redoStack_.empty()) { notify("Nothing to redo"); return; }
+    applyUndo(redoStack_, undoStack_, "redo");
+}
+
+void GameScreen::applyUndo(std::vector<UndoRecord>& from, std::vector<UndoRecord>& to, const char* verb) {
+    const UndoRecord& rec = from.back();
+    // where to show the message: the first thing it changes
+    const ObjSnap& any = rec.removed.empty() ? rec.added.front() : rec.removed.front();
+    float wx = float(any.pos.x * CELL_SIZE + CELL_SIZE / 2), wy = float(any.pos.y * CELL_SIZE);
+    ItemAmounts delta;
+    UndoRecord inverse;
+    std::string v = verb;
+    switch (builder_.undo(rec, &delta, &inverse)) {
+        case Builder::UndoResult::Ok:
+            from.pop_back();
+            to.push_back(std::move(inverse));
+            if (to.size() > UNDO_MAX) to.erase(to.begin());
+            if (itemDeltaText(delta).empty()) floatText(wx, wy, v == "undo" ? "Undone" : "Redone", Color{120, 255, 140, 255});
+            else showItemDelta(wx, wy, delta);
+            break;
+        case Builder::UndoResult::Changed:   // can never work any more
+            from.pop_back();
+            notify("Can't " + v + " that - it has been changed since");
+            break;
+        case Builder::UndoResult::Blocked: notify("Can't " + v + ": something else is in the way now"); break;
+        case Builder::UndoResult::PlayerInTheWay: notify("Can't " + v + ": you are standing in the way"); break;
+        case Builder::UndoResult::NoFunds: notify("Can't " + v + ": you don't have the items for it"); break;
+        case Builder::UndoResult::NoSpace: notify("Can't " + v + ": not enough inventory space"); break;
+        case Builder::UndoResult::Nothing: from.pop_back(); break;
+    }
+}
+
+std::string GameScreen::autosaveName() const {
+    if (save::isAutosave(saveName_)) return saveName_;   // an autosave whose save is gone: keep saving into it
+    return save::autosaveName(saveName_);
+}
+
+SearchBox* GameScreen::focusedSearch() {
+    for (SearchBox* sb : {&craftSearch_, &pickerSearch_, &bpSearch_, &machineSearch_})
+        if (sb->focused()) return sb;
+    return nullptr;
 }

@@ -12,6 +12,8 @@ std::vector<Texture2D> g_items;           // index = ItemId, id 0 unused
 std::vector<bool> g_itemLoaded;
 Texture2D g_machines[int(MachineType::Count)];
 bool g_machineLoaded[int(MachineType::Count)] = {};
+Texture2D g_machinesFlat[int(MachineType::Count)];      // "<sprite>_flat.png", optional
+bool g_machineFlatLoaded[int(MachineType::Count)] = {};
 Texture2D g_straight[4], g_curve[4][4], g_inter[4][4], g_opposite[4], g_cross[4];
 std::map<std::pair<int, bool>, Font> g_fonts;
 std::string g_fontPath, g_boldPath;
@@ -45,8 +47,14 @@ void load() {
     g_itemLoaded.assign(items.size(), false);
     for (size_t i = 1; i < items.size(); ++i) g_itemLoaded[i] = tryLoad(items[i].spritePath, g_items[i]);
 
-    for (int t = 0; t < int(MachineType::Count); ++t)
-        g_machineLoaded[t] = tryLoad(machineSpec(MachineType(t)).sprite, g_machines[t]);
+    for (int t = 0; t < int(MachineType::Count); ++t) {
+        std::string path = machineSpec(MachineType(t)).sprite;
+        g_machineLoaded[t] = tryLoad(path, g_machines[t]);
+        // machines that can lie on their side may have a second sprite for
+        // that: miner.png -> miner_flat.png
+        std::string flat = path.size() > 4 ? path.substr(0, path.size() - 4) + "_flat.png" : "";
+        g_machineFlatLoaded[t] = tryLoad(flat, g_machinesFlat[t]);
+    }
 
     const std::string c = "assets/sprites/conveyors/";
     for (int o = 0; o < 4; ++o) {
@@ -89,7 +97,10 @@ void load() {
 
 void unload() {
     for (size_t i = 1; i < g_items.size(); ++i) if (g_itemLoaded[i]) UnloadTexture(g_items[i]);
-    for (int t = 0; t < int(MachineType::Count); ++t) if (g_machineLoaded[t]) UnloadTexture(g_machines[t]);
+    for (int t = 0; t < int(MachineType::Count); ++t) {
+        if (g_machineLoaded[t]) UnloadTexture(g_machines[t]);
+        if (g_machineFlatLoaded[t]) UnloadTexture(g_machinesFlat[t]);
+    }
     for (auto& kv : g_fonts)
         if (kv.second.texture.id != GetFontDefault().texture.id) UnloadFont(kv.second);
     g_fonts.clear();
@@ -102,6 +113,31 @@ const Texture2D* item(ItemId id) {
 
 const Texture2D* machine(MachineType t) {
     return g_machineLoaded[int(t)] ? &g_machines[int(t)] : nullptr;
+}
+
+const Texture2D* machineFlat(MachineType t) {
+    return g_machineFlatLoaded[int(t)] ? &g_machinesFlat[int(t)] : nullptr;
+}
+
+void drawMachine(MachineType t, Dir d, Rectangle dest, Color tint) {
+    if (t == MachineType::Splitter) {   // turns with its direction
+        if (const Texture2D* tex = machine(t)) drawTexture(*tex, dest, tint, 90.0f * float(int(d)));
+        return;
+    }
+    bool lying = normalizeMachineDir(t, d) == Dir::Down && machineSpec(t).w != machineSpec(t).h;
+    if (lying) {
+        if (const Texture2D* flat = machineFlat(t)) { drawTexture(*flat, dest, tint); return; }
+        if (const Texture2D* tex = machine(t)) {
+            // no flat sprite yet: the standing one turned a quarter
+            Rectangle standing{dest.x + dest.width / 2 - dest.height / 2, dest.y + dest.height / 2 - dest.width / 2, dest.height, dest.width};
+            drawTexture(*tex, standing, tint, 90.0f);
+            return;
+        }
+    } else if (const Texture2D* tex = machine(t)) {
+        drawTexture(*tex, dest, tint);
+        return;
+    }
+    fillRound(dest, 4, Color{120, 120, 140, tint.a});
 }
 
 const Texture2D& belt(uint8_t mask, Dir out) {
