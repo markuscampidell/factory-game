@@ -13,7 +13,7 @@ const Color BAD_RED{255, 110, 110, 255};
 
 std::string objects(int n) { return std::to_string(n) + (n == 1 ? " object" : " objects"); }
 
-constexpr float LIST_W = 560, LIST_H = 470, ROW_H = 56, LIST_TOP = 60;
+constexpr float LIST_W = 560, LIST_H = 470, ROW_H = 68, LIST_TOP = 60;
 constexpr float BOOK_H = 46, EMPTY_BOOK_H = 30, BOOK_INDENT = 28, DRAG_MIN = 6;
 } // namespace
 
@@ -27,6 +27,9 @@ void GameScreen::startSelecting(bool forList) {
     placingBelt_ = false;
     bpMode_ = BpMode::Selecting;
     bpForList_ = forList;
+    bpTargetBook_ = 0;       // (the book's own button sets these afterwards)
+    bpConfigIndex_ = -1;
+    bpPendingName_.clear();
     bpDragging_ = false;
     notify(forList ? "New blueprint: drag a rectangle over what you want to save"
                    : "Copy: drag a rectangle over what you want to copy");
@@ -82,13 +85,14 @@ void GameScreen::finishSelection(Vec2i end) {
             return std::any_of(blueprints_.begin(), blueprints_.end(), [&](const Blueprint& b) { return b.name == nm; });
         };
         while (taken("Blueprint " + std::to_string(n))) ++n;
+        std::string name = bpPendingName_.empty() ? "Blueprint " + std::to_string(n) : bpPendingName_;
         bpPending_ = bp;
         bpPendingA_ = bpDragStart_;
         bpPendingB_ = end;
         bpSaveError_.clear();
         bpSaveOpen_ = true;
         Rectangle r = bpSaveRect();
-        bpNameInput_ = TextInput({r.x + 30, r.y + 110, r.width - 60, 40}, "Blueprint " + std::to_string(n));
+        bpNameInput_ = TextInput({r.x + 30, r.y + 110, r.width - 60, 40}, name);
         return;
     }
     bp.name = "Clipboard";
@@ -109,16 +113,36 @@ void GameScreen::savePendingBlueprint() {
     size_t a = name.find_first_not_of(' ');
     if (a == std::string::npos) { bpSaveError_ = "Please enter a name"; return; }
     name = name.substr(a, name.find_last_not_of(' ') - a + 1);
-    for (auto& b : blueprints_)
-        if (b.name == name) { bpSaveError_ = "A blueprint with this name already exists"; return; }
+    bool editing = bpConfigIndex_ >= 0 && bpConfigIndex_ < int(blueprints_.size());
+    for (size_t k = 0; k < blueprints_.size(); ++k)
+        if (blueprints_[k].name == name && !(editing && int(k) == bpConfigIndex_)) {
+            bpSaveError_ = "A blueprint with this name already exists";
+            return;
+        }
     bpPending_.name = name;
-    bpPending_.book = 0;   // new blueprints start outside the books
-    blueprints_.push_back(bpPending_);
+    int book = 0;   // the list opens again afterwards when it was used from there
+    bool reopen = editing;
+    if (editing) {
+        Blueprint& old = blueprints_[size_t(bpConfigIndex_)];
+        bpPending_.book = book = old.book;   // stays where it was
+        old = bpPending_;
+        notify("Saved changes to '" + name + "'");
+    } else {
+        for (auto& bk : bpBooks_)
+            if (bk.id == bpTargetBook_) book = bk.id;
+        bpPending_.book = book;               // 0 = outside the books
+        blueprints_.push_back(bpPending_);
+        reopen = book > 0;
+        notify(book > 0 ? "Saved blueprint '" + name + "' in the book" : "Saved blueprint '" + name + "' (press B to see your blueprints)");
+    }
     saveBlueprintList();
-    notify("Saved blueprint '" + name + "' (press B to see your blueprints)");
     bpSaveOpen_ = false;
     bpNameInput_.reset();
     resetBuildState();
+    if (reopen) {
+        if (!bpListOpen_) openBlueprintList();
+        if (book > 0) bpFold_.setOpen(bookKey(book), true);
+    }
 }
 
 bool GameScreen::bpSaveHandle(const Event& e) {
@@ -134,8 +158,14 @@ bool GameScreen::bpSaveHandle(const Event& e) {
     if (e.type == EvType::MouseDown && (!inRect(r, e.pos) || inRect(panelCloseRect(r), e.pos))) { cancel(); return true; }
     if (e.type == EvType::MouseDown && e.button == MB_LEFT) {
         if (inRect(reselect, e.pos)) {
+            if (mapMode()) { notify("Zoom in to select"); return true; }
+            bpPendingName_ = bpNameInput_ ? bpNameInput_->text : "";   // keep the name
             bpSaveOpen_ = false;
             bpNameInput_.reset();
+            closeAllPanels();              // (Configure opens this over the list)
+            mode_ = BuildMode::Building;
+            placingBelt_ = false;
+            bpForList_ = true;
             bpMode_ = BpMode::Selecting;   // drag a new rectangle
             bpDragging_ = false;
             notify("Drag a new rectangle for the blueprint");
@@ -155,7 +185,8 @@ void GameScreen::drawBpSaveDialog() {
     if (!bpSaveOpen_) return;
     Rectangle r = bpSaveRect();
     drawModalShade();
-    drawPanel(r, "Save blueprint");
+    bool editing = bpConfigIndex_ >= 0;
+    drawPanel(r, editing ? "Configure blueprint" : bpTargetBook_ > 0 ? "Save blueprint in book" : "Save blueprint");
     std::string info = std::to_string(bpPending_.w) + "x" + std::to_string(bpPending_.h) + ", " + objects(bpPending_.count());
     textCentered(info, r.x + r.width / 2, r.y + 56, 16, rgba(50, 50, 50));
     textCentered(fitText("Cost: " + costText(bpPending_.cost()), r.width - 40, 15), r.x + r.width / 2, r.y + 78, 15, rgba(50, 50, 50));
@@ -168,7 +199,7 @@ void GameScreen::drawBpSaveDialog() {
     Rectangle reselect{r.x + 30, r.y + r.height - 62, 150, 40};
     Rectangle saveBtn{r.x + r.width - 30 - 190, r.y + r.height - 62, 190, 40};
     drawButton(reselect, "Reselect", ui::BTN);
-    drawButton(saveBtn, "Save blueprint", ui::BTN_OK);
+    drawButton(saveBtn, editing ? "Save changes" : "Save blueprint", ui::BTN_OK);
     textCentered("ESC or click outside to cancel", r.x + r.width / 2, r.y + r.height - 11, 12, ui::TEXT_DIM);
 }
 
@@ -285,7 +316,13 @@ bool GameScreen::blueprintHandle(const Event& e) {
             if (row->kind == BpRowKind::Book) {
                 const BlueprintBook& bk = bpBooks_[size_t(row->index)];
                 Rectangle rename{del.x - 8 - 80, del.y, 80, 32};
-                if (inRect(del, e.pos)) {
+                Rectangle addBp{rename.x - 8 - 120, del.y, 120, 32};
+                if (inRect(addBp, e.pos)) {
+                    int id = bk.id;
+                    startSelecting(true);
+                    bpTargetBook_ = id;   // saved straight into this book
+                    notify("New blueprint for '" + bk.name + "': drag a rectangle over what you want to save");
+                } else if (inRect(del, e.pos)) {
                     int n = int(std::count_if(blueprints_.begin(), blueprints_.end(), [&](const Blueprint& b) { return b.book == bk.id; }));
                     bpDeleteBookId_ = bk.id;
                     bpDeleteConfirm_ = std::make_unique<ConfirmDialog>("Delete book '" + bk.name + "'?");
@@ -305,7 +342,9 @@ bool GameScreen::blueprintHandle(const Event& e) {
             if (row->kind == BpRowKind::Blueprint) {
                 size_t i = size_t(row->index);
                 Rectangle use{del.x - 8 - 70, del.y, 70, 32};
+                Rectangle config{use.x - 8 - 96, del.y, 96, 32};
                 if (inRect(use, e.pos)) { startPlacing(blueprints_[i]); return true; }
+                if (inRect(config, e.pos)) { openConfigure(int(i)); return true; }
                 if (inRect(del, e.pos)) {
                     bpDeleteIndex_ = int(i);
                     bpDeleteBookId_ = 0;
@@ -526,11 +565,13 @@ void GameScreen::drawBlueprintList() {
             FoldHeaderStyle st;
             st.bg = rgba(150, 147, 200, 170);
             Rectangle rename{del.x - 8 - 80, del.y, 80, 32};
+            Rectangle addBp{rename.x - 8 - 120, del.y, 120, 32};
             int n = int(std::count_if(blueprints_.begin(), blueprints_.end(), [&](const Blueprint& b) { return b.book == bk.id; }));
             std::string count = "(" + std::to_string(n) + ")";
-            float room = rename.x - 10 - (rr.x + 34) - measure(" " + count, 16).x;
+            float room = addBp.x - 10 - (rr.x + 34) - measure(" " + count, 16).x;
             float end = drawFoldHeader(rr, fitText(bk.name, room, 20), open, st);
             text(count, end + 8, rr.y + rr.height / 2 - 9, 16, ui::TEXT_DIM);
+            drawButton(addBp, "Add blueprint", ui::BTN_OK, 16);
             drawButton(rename, "Rename", ui::BTN, 16);
             drawButton(del, "Delete", ui::BTN_DANGER, 16);
             if (dropBook == bk.id) lineRound(rr, 8, 3, WHITE);   // drop it here
@@ -540,12 +581,18 @@ void GameScreen::drawBlueprintList() {
             const Blueprint& bp = blueprints_[size_t(row.index)];
             bool held = dragging && row.index == bpDragIndex_;
             fillRound(rr, 8, held ? Color{255, 255, 255, 50} : ui::ROW_BG);
-            float textW = del.x - 8 - 70 - 10 - (rr.x + 10);
+            Rectangle config{del.x - 8 - 70 - 8 - 96, del.y, 96, 32};
+            // map-view picture: the biggest square the row has room for
+            Rectangle pic{rr.x + 2, rr.y + 2, rr.height - 4, rr.height - 4};
+            drawBlueprintMap(bp, pic);
+            float tx = pic.x + pic.width + 10;
+            float textW = config.x - 10 - tx;
             Color c = held ? ui::TEXT_DIM : BLACK;
-            text(fitText(bp.name, textW, 20), rr.x + 10, rr.y + 4, 20, c, true);
+            text(fitText(bp.name, textW, 20), tx, rr.y + rr.height / 2 - 22, 20, c, true);
             std::string info = std::to_string(bp.w) + "x" + std::to_string(bp.h) + ", " + objects(bp.count()) +
                                " - " + costText(bp.cost());
-            text(fitText(info, textW, 14), rr.x + 10, rr.y + 28, 14, rgba(50, 50, 50));
+            text(fitText(info, textW, 14), tx, rr.y + rr.height / 2 + 4, 14, rgba(50, 50, 50));
+            drawButton(config, "Configure", ui::BTN, 16);
             drawButton({del.x - 8 - 70, del.y, 70, 32}, "Use", ui::BTN);
             drawButton(del, "Delete", ui::BTN_DANGER);
         }
@@ -710,4 +757,17 @@ void GameScreen::drawBpBookDialog() {
     if (!bpBookError_.empty()) textCentered(bpBookError_, r.x + r.width / 2, r.y + 130, 15, rgba(170, 20, 20));
     drawButton({r.x + 30, r.y + r.height - 58, 140, 40}, "Cancel", ui::BTN_DANGER);
     drawButton({r.x + r.width - 30 - 140, r.y + r.height - 58, 140, 40}, bpBookRenameId_ > 0 ? "Rename" : "Create", ui::BTN_OK);
+}
+
+// "Configure" on a blueprint: the Save blueprint dialog with its name;
+// Reselect drags a new rectangle, Save changes keeps it in its book.
+void GameScreen::openConfigure(int index) {
+    if (index < 0 || index >= int(blueprints_.size())) return;
+    resetBuildState();
+    bpConfigIndex_ = index;
+    bpPending_ = blueprints_[size_t(index)];
+    bpSaveError_.clear();
+    bpSaveOpen_ = true;
+    Rectangle r = bpSaveRect();
+    bpNameInput_ = TextInput({r.x + 30, r.y + 110, r.width - 60, 40}, bpPending_.name);
 }

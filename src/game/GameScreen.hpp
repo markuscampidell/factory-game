@@ -66,6 +66,12 @@ struct View {
     void zoomAt(float factor, Vector2 anchor);
 };
 
+// Map-view colours (GameDraw.cpp), shared by the map view, the minimap and
+// the blueprint pictures in the blueprint list.
+Color machineMapColor(MachineType t);
+// A blueprint drawn like the map view, as big as fits in `square` (centred).
+void drawBlueprintMap(const Blueprint& bp, Rectangle square);
+
 class GameScreen {
 public:
     GameScreen();
@@ -259,6 +265,13 @@ private:
     void drawBpBookDialog();
     // "Save blueprint" dialog shown after a Ctrl+B selection
     bool bpSaveOpen_ = false;
+    // The same dialog also adds a blueprint straight into a book (the book's
+    // "Add blueprint" button) and configures an existing one (rename /
+    // reselect). Both are cleared by resetBuildState().
+    int bpTargetBook_ = 0;             // > 0: the new blueprint goes into this book
+    int bpConfigIndex_ = -1;           // >= 0: editing blueprints_[i] instead of adding
+    std::string bpPendingName_;        // name typed before "Reselect"
+    void openConfigure(int index);
     Blueprint bpPending_;
     Vec2i bpPendingA_, bpPendingB_;
     std::optional<TextInput> bpNameInput_;

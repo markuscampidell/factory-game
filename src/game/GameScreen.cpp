@@ -517,6 +517,9 @@ void GameScreen::toggleCrafting() {
 // Build state
 // ---------------------------------------------------------------------------
 void GameScreen::resetBuildState() {
+    bpTargetBook_ = 0;
+    bpConfigIndex_ = -1;
+    bpPendingName_.clear();
     bpMode_ = BpMode::None;
     bpDragging_ = false;
     mode_ = BuildMode::None;

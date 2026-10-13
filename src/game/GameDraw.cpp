@@ -155,7 +155,7 @@ static Color oreMapColor(uint8_t tileType) {
     }
 }
 
-static Color machineMapColor(MachineType t) {
+Color machineMapColor(MachineType t) {
     switch (t) {
         case MachineType::Smelter: return {200, 70, 50, 255};
         case MachineType::Assembler: return {70, 120, 210, 255};
@@ -184,6 +184,22 @@ const Texture2D* GameScreen::mapTerrainTexture(int cx, int cy) {
         it = mapTerrain_.emplace(key, tex).first;
     }
     return &it->second;
+}
+
+void drawBlueprintMap(const Blueprint& bp, Rectangle sq) {
+    fillRound(sq, 6, Color{GROUND.r, GROUND.g, GROUND.b, 255});
+    if (bp.w <= 0 || bp.h <= 0) return;
+    const float pad = 3;
+    float tile = std::min((sq.width - 2 * pad) / float(bp.w), (sq.height - 2 * pad) / float(bp.h));
+    float x0 = sq.x + (sq.width - tile * float(bp.w)) / 2, y0 = sq.y + (sq.height - tile * float(bp.h)) / 2;
+    const Color beltColor{150, 150, 150, 255};
+    for (const BlueprintBelt& b : bp.belts)
+        DrawRectangleRec({x0 + float(b.off.x) * tile, y0 + float(b.off.y) * tile, tile, tile}, beltColor);
+    for (const BlueprintMachine& m : bp.machines) {
+        const MachineSpec& spec = machineSpec(m.type);
+        DrawRectangleRec({x0 + float(m.off.x) * tile, y0 + float(m.off.y) * tile, float(spec.w) * tile, float(spec.h) * tile},
+                         machineMapColor(m.type));
+    }
 }
 
 void GameScreen::drawMapView() {
