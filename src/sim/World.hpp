@@ -265,15 +265,8 @@ public:
     };
     uint8_t computeIncoming(Vec2i pos, Dir dir, const Overlay* ov = nullptr) const;
 
-    // Belt lines: belts and splitters connected to each other (either way
-    // round). A line "feeds" a machine if any belt of it points into the
-    // machine or any splitter of it has the machine on an output side.
-    // Machines and storage chests also push onto belts running past their
-    // sides (not only onto belts pointing straight away) - but never onto a
-    // line that feeds them, so their input line stays clean.
-    bool lineFeedsMachine(Vec2i beltPos, int machineId, const Overlay* ov = nullptr) const;
 
-    void markTopologyDirty() { topologyDirty_ = true; linesReady_ = false; }
+    void markTopologyDirty() { topologyDirty_ = true; }
     void ensureTopology();      // recompute incoming masks + transport order
 
     // ---- simulation ----
@@ -320,11 +313,6 @@ private:
 
     bool topologyDirty_ = true;
 
-    // Belt lines (see lineFeedsMachine), rebuilt with the topology.
-    bool linesReady_ = false;
-    std::vector<int> beltLine_;                    // belt id -> line number
-    std::unordered_set<uint64_t> lineFeeds_;       // (line << 32) | machine id
-    void rebuildLines();
     uint64_t tickCount_ = 0;
     UndoRecord record_;
     // What record_.added holds, for quick "added in this record?" checks

@@ -45,7 +45,7 @@ Saves there are kept in the browser (separate from the Windows saves). There's n
 * A belt tile takes exactly 15 ticks to cross, so a belt moves 4 items/s.
 * Each tick, belts are processed from the downstream end backwards. When an item leaves a tile, the tile behind it refills in the same tick. No time is lost between tiles, so a full belt delivers exactly 240 items per minute at 1 tile or at 5000 tiles.
 * Merges alternate fairly with no gaps. Splitters split evenly with no gaps. A splitter also feeds machines and chests touching it directly, taking turns with the belts on its other sides. A completely full belt loop keeps moving.
-* Smelters, assemblers, miners and storage chests push onto a belt pointing straight away from them and also onto belts running past their sides; such a belt is drawn joined to the machine like an intersection, and the machine takes turns with the belt behind it like a merge. A machine or chest never pushes onto its own input line: belts and splitters connected to each other form a line, and if any part of it feeds the machine (a belt pointing into it, or a splitter output touching it), none of it is used as an output. `World::lineFeedsMachine`, `computeIncoming`.
+* Smelters, assemblers, miners and storage chests push onto a belt pointing straight away from them and also onto every belt running past their sides; such a belt is drawn joined to the machine like an intersection, and the machine takes turns with the belt behind it like a merge. There are no exceptions, so build input lines one tile away from the machine and let them end pointing into it (or feed it from a splitter). `World::computeIncoming`.
 * The tests check all of this by counting the items that arrive at the end of the belt.
 
 ### Items are never created or destroyed
@@ -64,7 +64,7 @@ Saves there are kept in the browser (separate from the Windows saves). There's n
 * Performance: 100,000 belts take about 1.7 ms per simulation tick.
 * Saving (autosave, Save, Save As, Save & Exit) doesn't freeze the game: the world is copied in a few ms and the file is built and written on a background thread (the browser version still saves directly - no threads there). Loading, listing, renaming or deleting saves waits for a save that is still being written, and so does closing the game. A failed background save shows "Saving failed: ...". `save::saveGameInBackground`.
 * Save files keep their keys in the order they are written, with "play_time" near the top, so the main menu reads a save's play time without parsing the whole file (older saves still work, just slower). The content is the same and Python still reads them.
-* Building or deleting rebuilds the belt topology; with ~73,000 belts that takes about 15 ms (belt lines via union-find on cached neighbours, chunk lookups remember the last chunk). Undo records use a hash index, so big pastes / undos stay fast.
+* Building or deleting rebuilds the belt topology; with ~73,000 belts that takes about 15 ms (cached neighbours, chunk lookups remember the last chunk). Undo records use a hash index, so big pastes / undos stay fast.
 * Map view and minimap: one small texture per chunk with terrain, belts and machines (1 pixel per tile), rebuilt only when something in that chunk changes (`Chunk::version`) - not thousands of rectangles every frame.
 * Items without a sprite (limestone, concrete) are drawn as labeled tiles, so limestone patches are visible now.
 * Iron Plate recipe: 3 Iron Ingot gives 2 Iron Plate in 6 s. The old one was a test recipe that gave 40 plates and 40 coal.
