@@ -417,6 +417,28 @@ void GameScreen::showItemDelta(float wx, float wy, const ItemAmounts& delta) {
     floatText(wx, wy, s, c);
 }
 
+void GameScreen::takeAt(Vector2 p) {
+    TileRef r = objectAt(p);
+    if (r >= 0 || !takenThisHold_.insert(r).second) return;   // each machine once per hold
+    Machine& m = world_.machine(-r - 1);
+    if (!m.isProducing() && !m.isStorage()) return;
+    RectF rc = m.pixelRect();
+    const Color bad{255, 110, 110, 255};
+    ItemAmounts got;
+    switch (builder_.takeContents(m, &got)) {
+        case Builder::TakeResult::Ok: showItemDelta(rc.cx(), rc.top(), got); break;
+        case Builder::TakeResult::Nothing: floatText(rc.cx(), rc.top(), m.isStorage() ? "This chest is empty" : "No outputs to take", bad); break;
+        case Builder::TakeResult::NoSpace: floatText(rc.cx(), rc.top(), "Inventory full", bad); break;
+    }
+}
+
+void GameScreen::updateTakeHold() {
+    if (!takeHolding_) return;
+    if (!IsMouseButtonDown(MOUSE_BUTTON_LEFT) || !ctrlDown()) { takeHolding_ = false; return; }
+    Vector2 m = ui::mouse();
+    if (interactionAllowed(m)) takeAt(m);
+}
+
 void GameScreen::floatText(float wx, float wy, const std::string& s, Color c) {
     // replace an identical message at the same spot instead of stacking them
     for (auto& f : floatTexts_)
@@ -438,6 +460,7 @@ void GameScreen::perFrame() {
     if (!IsMouseButtonDown(MOUSE_BUTTON_LEFT)) commitUndo();   // a whole drag = one undo step
     validatePanels();
     updatePasteHold();
+    updateTakeHold();
 
     updateDrag();
 
@@ -791,20 +814,14 @@ void GameScreen::worldClick(const Event& e) {
     if (e.type != EvType::MouseDown || e.button != MB_LEFT || justPlaced_ || shiftDown()) return;
     if (!interactionAllowed(e.pos)) return;
     TileRef r = objectAt(e.pos);
-    if (r < 0 && ctrlDown()) {   // Ctrl + left click: take outputs / chest contents, no panel
-        Machine& m = world_.machine(-r - 1);
-        if (m.isProducing() || m.isStorage()) {
-            RectF rc = m.pixelRect();
-            ItemAmounts got;
-            switch (builder_.takeContents(m, &got)) {
-                case Builder::TakeResult::Ok: showItemDelta(rc.cx(), rc.top(), got); break;
-                case Builder::TakeResult::Nothing:
-                    floatText(rc.cx(), rc.top(), m.isStorage() ? "This chest is empty" : "No outputs to take", Color{255, 110, 110, 255});
-                    break;
-                case Builder::TakeResult::NoSpace: floatText(rc.cx(), rc.top(), "Inventory full", Color{255, 110, 110, 255}); break;
-            }
-            return;
-        }
+    // Ctrl + left click on a machine / chest or the ground: take outputs /
+    // chest contents, no panel; holding the button sweeps (updateTakeHold).
+    // (Ctrl + click on a belt or splitter still opens it.)
+    if (ctrlDown() && (r == 0 || (r < 0 && !world_.machine(-r - 1).isSplitter()))) {
+        takeHolding_ = true;
+        takenThisHold_.clear();
+        takeAt(e.pos);
+        return;
     }
     if (r < 0) {
         int id = -r - 1;

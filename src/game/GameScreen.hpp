@@ -428,6 +428,12 @@ private:
     void pasteAt(Vector2 p);
     void updatePasteHold();
     void pasteSuccess(float wx, float wy, const std::string& kind, const std::string& what);
+    // Ctrl + left click (and keep holding to sweep): take outputs / chest
+    // contents from every machine and chest the mouse passes, each once.
+    bool takeHolding_ = false;
+    std::set<TileRef> takenThisHold_;
+    void takeAt(Vector2 p);
+    void updateTakeHold();
     std::optional<Vec2i> hoveredOre_;
 
     // ---- floating texts in the world ("Copied recipe", "Inventory full") ----
