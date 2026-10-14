@@ -71,6 +71,9 @@ struct View {
 Color machineMapColor(MachineType t);
 // A blueprint drawn like the map view, as big as fits in `square` (centred).
 void drawBlueprintMap(const Blueprint& bp, Rectangle square);
+// Green arrows on the output sides of a smelter / assembler (nothing for
+// other machines). `dest` = the machine in world pixels.
+void drawOutputSideArrows(MachineType t, Dir d, Rectangle dest, unsigned char alpha = 230);
 // Map marker symbols: every sprite of the game (items, machines, belt).
 struct MarkerSymbol { std::string id, name; };
 const std::vector<MarkerSymbol>& markerSymbols();

@@ -7,6 +7,8 @@
 #include "../src/sim/Build.hpp"
 #include "../src/sim/Save.hpp"
 #include "../src/sim/Terrain.hpp"
+#include <nlohmann/json.hpp>
+#include <fstream>
 #include <cstdio>
 #include <cstdlib>
 #include <map>
@@ -207,67 +209,187 @@ static void testProductionChain() {
 }
 
 // ---------------------------------------------------------------------------
-// Side outputs: machines and chests push onto every belt running past their
-// sides (joined like an intersection) - input lines go one tile away and end
-// pointing into the machine.
+// Output sides: smelters / assemblers push only onto belts on their two
+// output sides (dir and the side counter-clockwise of it; default right +
+// top), pointing away or running past. Inputs come from every side. Miners
+// push onto every side, chests only onto belts pointing straight away.
 //
-//   y=-1   >>>>>  (to the sink chest at x 4..5)    smelter x 0..2, y 0..2
-//   y= 1   >> into the smelter's left side, from a chest at x -4..-3
-static void testSideOutputs() {
-    World w;
-    w.seed = 1;
-    makeSourceStorage(w, {-4, 0}, IRON_ORE, 300);                     // -4..-3, 0..1
-    w.addBelt({-2, 1}, Dir::Right);
-    w.addBelt({-1, 1}, Dir::Right);                                    // into the smelter
-    int sm = w.addMachine(makeMachine(MachineType::Smelter, {0, 0}));  // 0..2, 0..2
-    line(w, {0, -1}, Dir::Right, 4);                                   // 0..3 past its top
-    int sink = makeSinkStorage(w, {4, -2});                            // 4..5, -2..-1
-    w.ensureTopology();
-    CHECK(w.beltAt({1, -1})->incomingMask == (dirBit(Dir::Right) | dirBit(Dir::Up)), "belt past the top not joined (mask %d)",
-          w.beltAt({1, -1})->incomingMask);
-    CHECK(w.beltAt({0, -1})->incomingMask == dirBit(Dir::Up), "first belt past the top: mask %d", w.beltAt({0, -1})->incomingMask);
-    CHECK(w.machine(sm).outBelts.size() == 3, "smelter has %d output belts, expected 3", int(w.machine(sm).outBelts.size()));
-    CHECK(w.beltAt({-1, 1})->incomingMask == dirBit(Dir::Right), "the belt into the smelter got joined");
+// A ring of belts running clockwise around a 3x3 machine at (0,0): every
+// side has 3 belts running past it.
+static void beltRing(World& w) {
+    for (int x = 0; x <= 2; ++x) w.addBelt({x, -1}, Dir::Right);   // top
+    for (int y = 0; y <= 2; ++y) w.addBelt({3, y}, Dir::Down);     // right
+    for (int x = 0; x <= 2; ++x) w.addBelt({x, 3}, Dir::Left);     // bottom
+    for (int y = 0; y <= 2; ++y) w.addBelt({-1, y}, Dir::Up);      // left
+}
+// Which sides machine `id` pushes onto, as a bit mask of directions.
+static uint8_t outSides(World& w, int id) {
+    uint8_t m = 0;
+    for (Dir d : w.machine(id).outDirs) m |= dirBit(d);
+    return m;
+}
 
-    bool ingotOnInput = false;
-    for (int t = 0; t < 60 * 60; ++t) {
-        w.tick();
-        for (int x = -2; x <= -1; ++x)
-            if (w.beltAt({x, 1})->item == IRON_INGOT) ingotOnInput = true;
+static void testOutputSides() {
+    // every rotation of a smelter
+    const Dir dirs[] = {Dir::Right, Dir::Down, Dir::Left, Dir::Up};
+    const uint8_t want[] = {uint8_t(dirBit(Dir::Right) | dirBit(Dir::Up)), uint8_t(dirBit(Dir::Down) | dirBit(Dir::Right)),
+                            uint8_t(dirBit(Dir::Left) | dirBit(Dir::Down)), uint8_t(dirBit(Dir::Up) | dirBit(Dir::Left))};
+    for (int i = 0; i < 4; ++i) {
+        World w; w.seed = 1;
+        int id = w.addMachine(makeMachine(MachineType::Smelter, {0, 0}, dirs[i]));
+        beltRing(w);
+        w.ensureTopology();
+        CHECK(outSides(w, id) == want[i] && w.machine(id).outBelts.size() == 6, "smelter turned %s: sides %d, %d belts", dirName(dirs[i]),
+              outSides(w, id), int(w.machine(id).outBelts.size()));
     }
-    CHECK(!ingotOnInput, "an ingot ended up on the input belts");
-    int got = w.machine(sink).storage.amount(IRON_INGOT);
-    CHECK(got >= 27, "side output delivered %d ingots in 60 s", got);
-    auto m = asMap(w.countItems());
-    CHECK(m[IRON_ORE] + 3 * m[IRON_INGOT] == 300, "ore/ingot balance broken: %d ore + 3*%d ingots", m[IRON_ORE], m[IRON_INGOT]);
-    std::printf("  side outputs: %d ingots in 60 s\n", got);
+    // default: right + top; an input side doesn't output even onto a belt pointing straight away
+    {
+        World w; w.seed = 1;
+        int id = w.addMachine(makeMachine(MachineType::Smelter, {0, 0}));
+        w.addBelt({1, -1}, Dir::Up);      // top, pointing away
+        w.addBelt({-1, 1}, Dir::Left);    // left, pointing away
+        w.ensureTopology();
+        CHECK(outSides(w, id) == dirBit(Dir::Up), "default smelter sides %d", outSides(w, id));
+        CHECK(w.beltAt({-1, 1})->incomingMask == 0, "belt pointing away from an input side got joined");
+    }
+    // inputs from every side, even an output side
+    {
+        World w; w.seed = 1;
+        int id = w.addMachine(makeMachine(MachineType::Smelter, {0, 0}));
+        int b = w.addBelt({1, -1}, Dir::Down);   // top (an output side), pointing in
+        w.belt(b).item = IRON_ORE;
+        w.belt(b).progress = BELT_TICKS_PER_TILE;
+        for (int t = 0; t < 5; ++t) w.tick();
+        CHECK(w.machine(id).inputBuffer(IRON_ORE)->inv.amount(IRON_ORE) == 1, "input from an output side refused");
+    }
+    // a miner pushes onto every side
+    {
+        World w; w.seed = 1;
+        int id = w.addMachine(makeMachine(MachineType::Miner, {0, 0}, Dir::Right, IRON_ORE));   // 2 x 3
+        for (int x = 0; x <= 1; ++x) { w.addBelt({x, -1}, Dir::Right); w.addBelt({x, 3}, Dir::Left); }
+        for (int y = 0; y <= 2; ++y) { w.addBelt({2, y}, Dir::Down); w.addBelt({-1, y}, Dir::Up); }
+        w.ensureTopology();
+        CHECK(w.machine(id).outBelts.size() == 10, "miner pushes onto %d of 10 belts around it", int(w.machine(id).outBelts.size()));
+    }
+    // chests: only onto belts pointing straight away
+    {
+        World w; w.seed = 1;
+        makeSourceStorage(w, {0, 0}, IRON_INGOT, 10);                 // 0..1, 0..1
+        line(w, {-1, -1}, Dir::Right, 3);                             // running past the top
+        w.addBelt({2, 1}, Dir::Right);                                // pointing away (right)
+        int sink = makeSinkStorage(w, {3, 1});
+        w.ensureTopology();
+        CHECK(w.beltAt({0, -1})->incomingMask == dirBit(Dir::Right), "chest joined a belt running past it (mask %d)", w.beltAt({0, -1})->incomingMask);
+        for (int t = 0; t < 600; ++t) w.tick();
+        CHECK(w.machine(sink).storage.amount(IRON_INGOT) == 10, "chest pushed %d of 10 onto the belt pointing away", w.machine(sink).storage.amount(IRON_INGOT));
+    }
+    // a working line: ore in from the left, ingots out on top into a chest
+    {
+        World w; w.seed = 1;
+        makeSourceStorage(w, {-4, 0}, IRON_ORE, 300);                 // -4..-3, 0..1
+        w.addBelt({-2, 1}, Dir::Right);
+        w.addBelt({-1, 1}, Dir::Right);                               // into the smelter's left side
+        w.addMachine(makeMachine(MachineType::Smelter, {0, 0}));
+        line(w, {0, -1}, Dir::Right, 4);                              // past its top
+        int sink = makeSinkStorage(w, {4, -2});
+        for (int t = 0; t < 60 * 60; ++t) w.tick();
+        int got = w.machine(sink).storage.amount(IRON_INGOT);
+        CHECK(got >= 27, "top output delivered %d ingots in 60 s", got);
+        auto m = asMap(w.countItems());
+        CHECK(m[IRON_ORE] + 3 * m[IRON_INGOT] == 300, "ore/ingot balance broken");
+        std::printf("  output sides: %d ingots in 60 s (right + top), rotations / miners / chests ok\n", got);
+    }
+    // previews (overlay) use the same rule
+    {
+        World w; w.seed = 1;
+        w.addMachine(makeMachine(MachineType::Smelter, {0, 0}));
+        World::Overlay ov;
+        ov.belts[{1, -1}] = Dir::Right;
+        ov.belts[{1, 3}] = Dir::Right;
+        CHECK(w.computeIncoming({1, -1}, Dir::Right, &ov) == dirBit(Dir::Up), "preview on the top side not joined");
+        CHECK(w.computeIncoming({1, 3}, Dir::Right, &ov) == 0, "preview on the bottom (input) side joined");
+    }
+    // blueprints turn / mirror the output sides with the machine
+    {
+        Blueprint bp;
+        BlueprintMachine bm; bm.type = MachineType::Smelter; bm.off = {0, 0}; bm.dir = Dir::Right;
+        bp.machines.push_back(bm); bp.w = 3; bp.h = 3;
+        CHECK(rotatedCW(bp).machines[0].dir == Dir::Down, "turned blueprint: smelter %s", dirName(rotatedCW(bp).machines[0].dir));
+        CHECK(mirrored(bp).machines[0].dir == Dir::Up, "mirrored blueprint: smelter %s (right + top -> left + top = Up)", dirName(mirrored(bp).machines[0].dir));
+        bp.machines[0].dir = Dir::Down;   // bottom + right -> bottom + left = Left
+        CHECK(mirrored(bp).machines[0].dir == Dir::Left, "mirrored blueprint (Down): %s", dirName(mirrored(bp).machines[0].dir));
+    }
+    // placing over a smelter turned another way: blocked, Shift turns it in place (keeping its items)
+    {
+        World w; w.seed = 1;
+        Player p; p.setCenter(-5000, -5000);
+        Builder b(w, p);
+        int id = w.addMachine(makeMachine(MachineType::Smelter, {0, 0}));
+        w.machine(id).inputs[0].inv.tryAdd(w.machine(id).inputs[0].item, 4);
+        CHECK(b.placeMachine(MachineType::Smelter, {1, 1}, Dir::Down, false, nullptr) < 0, "placing a turned smelter over one was allowed");
+        int kept = b.placeMachine(MachineType::Smelter, {1, 1}, Dir::Down, true, nullptr);
+        CHECK(kept == id && w.machine(id).dir == Dir::Down && total(w.machine(id).contents()) == 4, "Shift did not turn it in place");
+    }
+    // R on a placed smelter: turns it, keeps its items, undo turns it back
+    {
+        World w; w.seed = 1;
+        Player p; p.setCenter(-5000, -5000);
+        Builder b(w, p);
+        int id = w.addMachine(makeMachine(MachineType::Smelter, {0, 0}));
+        w.machine(id).inputs[0].inv.tryAdd(w.machine(id).inputs[0].item, 4);
+        w.addBelt({3, 1}, Dir::Down);   // right side, running past
+        w.ensureTopology();
+        CHECK(w.machine(id).outBelts.size() == 1, "right side not an output before turning");
+        w.recordChanges = true;
+        w.takeRecord();
+        CHECK(b.turnMachine(id, 2) && w.machine(id).dir == Dir::Left, "turn by T failed");
+        w.ensureTopology();
+        CHECK(w.machine(id).outBelts.empty() && total(w.machine(id).contents()) == 4, "turned smelter still outputs right / lost items");
+        UndoRecord rec = w.takeRecord();
+        CHECK(b.undo(rec) == Builder::UndoResult::Ok, "undo of a turn failed");
+        const Machine* back = w.machineAt({0, 0});
+        CHECK(back && back->dir == Dir::Right && total(back->contents()) == 4, "undo did not turn it back exactly");
+        CHECK(!b.turnMachine(-1, 1), "turned a machine that doesn't exist");
+        int chest = w.addMachine(makeMachine(MachineType::Storage, {10, 0}));
+        CHECK(!b.turnMachine(chest, 1), "a chest was turned");
+    }
+}
 
-    // No exceptions: a belt running past a machine is always an output, even
-    // if the same line turns into the machine later.
-    World v;
-    v.seed = 1;
-    int s2 = v.addMachine(makeMachine(MachineType::Smelter, {20, 0}));  // 20..22, 0..2
-    line(v, {19, -1}, Dir::Right, 4);                                  // 19..22 above it
-    v.addBelt({23, -1}, Dir::Down);
-    v.addBelt({23, 0}, Dir::Left);                                     // into the smelter
-    v.ensureTopology();
-    CHECK(v.machine(s2).outBelts.size() == 3, "%d side outputs, expected 3", int(v.machine(s2).outBelts.size()));
-    // previews (overlay) follow the same rule
-    World::Overlay ov;
-    ov.belts[{21, 3}] = Dir::Left;
-    CHECK(v.computeIncoming({21, 3}, Dir::Left, &ov) == dirBit(Dir::Down), "preview belt below the smelter not joined");
-
-    // storage chests work the same way
-    World u;
-    u.seed = 1;
-    makeSourceStorage(u, {0, 0}, IRON_INGOT, 10);                      // 0..1, 0..1
-    line(u, {-1, -1}, Dir::Right, 4);                                  // past its top side ...
-    int sinkC = makeSinkStorage(u, {3, -2});                           // ... into another chest
-    u.ensureTopology();
-    CHECK(u.beltAt({0, -1})->incomingMask == (dirBit(Dir::Right) | dirBit(Dir::Up)), "chest not joined to a passing belt (mask %d)",
-          u.beltAt({0, -1})->incomingMask);
-    for (int t = 0; t < 600; ++t) u.tick();
-    CHECK(u.machine(sinkC).storage.amount(IRON_INGOT) == 10, "chest side output delivered %d of 10", u.machine(sinkC).storage.amount(IRON_INGOT));
+// Output sides in saves: kept when saving / loading; saves from before output
+// sides (no "direction") turn each smelter towards its old output belts.
+static void testOutputSidesSave() {
+    save::setSavesDir("test_saves");
+    World w; Player p; CameraState cam;
+    w.seed = 1;
+    int a = w.addMachine(makeMachine(MachineType::Smelter, {0, 0}, Dir::Up));   // top + left
+    int b = w.addMachine(makeMachine(MachineType::Smelter, {10, 0}));            // old-style: belts left + bottom
+    w.addBelt({9, 1}, Dir::Left);    // pointing away from its left side
+    w.addBelt({11, 3}, Dir::Down);   // pointing away from its bottom side
+    int c = w.addMachine(makeMachine(MachineType::Assembler, {20, 0}));         // no belts: default
+    (void)a; (void)b; (void)c;
+    CHECK(save::saveGame(w, p, cam, "output_sides"), "save failed");
+    {
+        World l; Player lp; CameraState lc;
+        CHECK(save::loadGame(l, lp, lc, "output_sides"), "load failed");
+        CHECK(l.machineAt({0, 0})->dir == Dir::Up, "direction not kept: %s", dirName(l.machineAt({0, 0})->dir));
+    }
+    // the same file without "direction" on the machines, like an older save
+    {
+        std::ifstream in("test_saves/output_sides.json");
+        nlohmann::ordered_json j;
+        in >> j;
+        in.close();
+        for (auto& m : j["machines"]) m.erase("direction");
+        std::ofstream("test_saves/output_sides.json") << j.dump(2);
+    }
+    World l; Player lp; CameraState lc;
+    CHECK(save::loadGame(l, lp, lc, "output_sides"), "old-style load failed");
+    CHECK(l.machineAt({10, 0})->dir == Dir::Left, "old save: smelter with belts left + bottom turned %s, expected left", dirName(l.machineAt({10, 0})->dir));
+    CHECK(l.machineAt({0, 0})->dir == Dir::Right && l.machineAt({20, 0})->dir == Dir::Right, "old save: machines without belts not right + top");
+    l.ensureTopology();
+    CHECK(l.machineAt({10, 0})->outBelts.size() == 2, "old save: %d of 2 old output belts kept", int(l.machineAt({10, 0})->outBelts.size()));
+    save::remove("output_sides");
+    std::printf("  output sides saved; old saves keep their output belts\n");
 }
 
 // Ctrl + left click: take a machine's outputs / a chest's contents.
@@ -474,7 +596,7 @@ static void testUndo() {
         World mw; mw.seed = 1;
         auto miner = makeMachine(MachineType::Miner, {0, 0}, Dir::Down, IRON_ORE);
         CHECK(miner->w == 3 && miner->h == 2 && miner->dir == Dir::Down, "flat miner footprint");
-        CHECK(makeMachine(MachineType::Smelter, {0, 0}, Dir::Down)->dir == Dir::Right, "square machines have one direction");
+        CHECK(makeMachine(MachineType::Storage, {0, 0}, Dir::Down)->dir == Dir::Right, "a chest has one direction");
         Blueprint bp;
         BlueprintMachine bm; bm.type = MachineType::Miner; bm.off = {0, 0}; bm.dir = Dir::Right;
         bp.machines.push_back(bm); bp.w = 2; bp.h = 3;
@@ -855,7 +977,8 @@ int main(int argc, char** argv) {
     testFullLoopRotates();
     std::printf("Machines\n");
     testProductionChain();
-    testSideOutputs();
+    testOutputSides();
+    testOutputSidesSave();
     testTakeContents();
     testPickUpUnderPlayer();
     testHandCraftingAndRecipeSwitch();

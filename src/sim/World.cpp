@@ -84,13 +84,20 @@ const std::vector<const Recipe*>* Machine::recipeChoices() const {
 }
 
 Dir normalizeMachineDir(MachineType t, Dir d) {
-    if (t == MachineType::Splitter) return d;
+    if (t == MachineType::Splitter || machineHasOutputSides(t)) return d;
     const MachineSpec& s = machineSpec(t);
     if (s.w == s.h) return Dir::Right;
     return (d == Dir::Down || d == Dir::Up) ? Dir::Down : Dir::Right;
 }
 
-bool machineTurnable(MachineType t) { return t == MachineType::Splitter || machineSpec(t).w != machineSpec(t).h; }
+bool machineTurnable(MachineType t) { return machineDirMatters(t) || machineSpec(t).w != machineSpec(t).h; }
+
+Dir mirroredMachineDir(MachineType t, Dir d) {
+    auto flip = [](Dir x) { return x == Dir::Left ? Dir::Right : x == Dir::Right ? Dir::Left : x; };
+    // output sides {d, ccw(d)} mirrored are {flip(ccw(d)), flip(d)} = {e, ccw(e)} with e = flip(ccw(d))
+    if (machineHasOutputSides(t)) return flip(rotateCW(d, -1));
+    return normalizeMachineDir(t, flip(d));
+}
 
 Vec2i machineSize(MachineType t, Dir d) {
     const MachineSpec& s = machineSpec(t);
@@ -348,13 +355,12 @@ uint8_t World::computeIncoming(Vec2i pos, Dir dir, const Overlay* ov) const {
             const Machine& m = *machines_[size_t(mid)];
             if (m.isSplitter()) {
                 if (travel != opposite(m.dir)) mask |= dirBit(travel);
-            } else if (travel == dir) {
-                // a belt pointing straight away from any machine
-                mask |= dirBit(travel);
-            } else if (m.isProducing() || m.isStorage()) {
-                // a belt running past a machine's or chest's side: joined
-                // like an intersection, the machine pushes onto it (so input
-                // lines go one tile away from the machine)
+            } else if (m.isStorage()) {
+                // a chest only pushes onto a belt pointing straight away
+                if (travel == dir) mask |= dirBit(travel);
+            } else if (isOutputSide(m.type, m.dir, travel)) {
+                // a belt on an output side of a machine (pointing away or
+                // running past it, joined like an intersection)
                 mask |= dirBit(travel);
             }
         }

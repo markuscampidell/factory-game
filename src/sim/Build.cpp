@@ -166,7 +166,7 @@ PlacePlan Builder::planPlacement(const std::vector<PlaceRequest>& reqs, bool all
             bool same = ob.empty() && om.size() == 1 && world.machine(om[0]).type == r.type && world.machine(om[0]).pos == r.pos &&
                         world.machine(om[0]).w == sz.x && world.machine(om[0]).h == sz.y;
             if (byPlayer) st = PlaceStatus::Blocked;
-            else if (same && (!world.machine(om[0]).isSplitter() || world.machine(om[0]).dir == r.dir || allowReplace)) {
+            else if (same && (!machineDirMatters(r.type) || world.machine(om[0]).dir == normalizeMachineDir(r.type, r.dir) || allowReplace)) {
                 keep = om[0];
                 if (recipeChange(world.machine(keep), r))
                     for (auto& p : bufferContents(world.machine(keep))) addAmount(refunds, p.first, p.second);
@@ -221,7 +221,8 @@ std::vector<int> Builder::executePlacement(const std::vector<PlaceRequest>& reqs
             const Machine& m = world.machine(keep);
             bool filters = r.setFilters && !(sameFilter(m.sideFilters[0], r.sideFilters[0]) && sameFilter(m.sideFilters[1], r.sideFilters[1]) &&
                                              sameFilter(m.sideFilters[2], r.sideFilters[2]));
-            if ((m.isSplitter() && m.dir != r.dir) || recipeChange(m, r) || filters) world.noteChangedMachine(keep);
+            bool turned = machineDirMatters(m.type) && m.dir != normalizeMachineDir(m.type, r.dir);
+            if (turned || recipeChange(m, r) || filters) world.noteChangedMachine(keep);
         }
     }
     for (size_t i = 0; i < reqs.size(); ++i) {
@@ -253,7 +254,7 @@ std::vector<int> Builder::executePlacement(const std::vector<PlaceRequest>& reqs
         int id = keep;
         if (id >= 0) {
             Machine& m = world.machine(id);   // kept: contents stay unless the recipe changes
-            if (m.isSplitter()) m.dir = r.dir;
+            if (machineDirMatters(m.type)) m.dir = normalizeMachineDir(m.type, r.dir);
             if (const Recipe* rc = recipeChange(m, r)) {
                 m.recipe = rc;
                 m.processing = false;
@@ -354,6 +355,15 @@ Builder::TakeResult Builder::takeContents(Machine& m, ItemAmounts* got) {
     if (got) *got = moved;
     if (!any) return TakeResult::Nothing;
     return moved.empty() ? TakeResult::NoSpace : TakeResult::Ok;
+}
+
+bool Builder::turnMachine(int id, int steps) {
+    if (!world.machineAlive(id) || !machineHasOutputSides(world.machine(id).type)) return false;
+    world.noteChangedMachine(id);   // before changing it (undo)
+    Machine& m = world.machine(id);
+    m.dir = rotateCW(m.dir, steps);
+    world.markTopologyDirty();
+    return true;
 }
 
 Builder::TakeResult Builder::pickUpUnderPlayer(ItemAmounts* got) {

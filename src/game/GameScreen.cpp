@@ -594,6 +594,12 @@ void GameScreen::handleKeys(const Event& e) {
     if (invOpen_ || machinePanel_ >= 0 || storagePanel_ >= 0 || beltPanel_ >= 0 || splitterPanel_ >= 0) return;
     if (e.key == KEY_R && mode_ == BuildMode::Building) { rotateSelected(shiftDown() ? -1 : 1); return; }
     if (e.key == KEY_T && mode_ == BuildMode::Building) { rotateSelected(2); return; }
+    // not building: R / Shift + R / T turn the smelter / assembler under the mouse
+    if ((e.key == KEY_R || e.key == KEY_T) && mode_ == BuildMode::None && bpMode_ == BpMode::None && !ctrlDown()) {
+        Vector2 m = ui::mouse();
+        TileRef r = interactionAllowed(m) ? objectAt(m) : 0;
+        if (r < 0) builder_.turnMachine(-r - 1, e.key == KEY_T ? 2 : shiftDown() ? -1 : 1);   // undo: a step of its own
+    }
 }
 
 void GameScreen::handleMouse(const Event& e) {
@@ -680,10 +686,11 @@ void GameScreen::enterBuild() {
 }
 
 void GameScreen::rotateSelected(int steps) {
-    if (selected_ == Buildable::Splitter) splitterRot_ = floorMod(splitterRot_ + steps, 4);
-    else if (selected_ != Buildable::Belt && machineTurnable(toMachine(selected_)))
-        splitterRot_ = floorMod(splitterRot_ + steps, 2);   // standing (0) / lying (1); T changes nothing
-    else if (selected_ == Buildable::Belt) beltDir_ = rotateCW(beltDir_, steps);
+    if (selected_ == Buildable::Belt) { beltDir_ = rotateCW(beltDir_, steps); return; }
+    MachineType t = toMachine(selected_);
+    if (machineDirMatters(t)) splitterRot_ = floorMod(splitterRot_ + steps, 4);   // splitters; smelters / assemblers: output sides
+    else if (machineTurnable(t))
+        splitterRot_ = floorMod(splitterRot_ + steps, 2);   // a miner: standing (0) / lying (1); T changes nothing
 }
 
 void GameScreen::cancelBuildOrDelete() {
@@ -800,7 +807,7 @@ bool GameScreen::pipetteClick(const Event& e) {
     } else {
         const Machine& m = world_.machine(-r - 1);
         select(toBuildable(m.type));
-        if (m.isSplitter() || machineTurnable(m.type)) splitterRot_ = int(m.dir) % (m.isSplitter() ? 4 : 2);
+        if (machineTurnable(m.type)) splitterRot_ = int(m.dir) % (machineDirMatters(m.type) ? 4 : 2);
         RectF rc = m.pixelRect();
         wx = rc.cx();
         wy = rc.top();
@@ -1039,6 +1046,8 @@ std::string GameScreen::hotbarTooltip(Vector2 p) const {
         std::string tip = name + " (" + key + ") - " + costText(cost);
         if (belt || s.b == Buildable::Splitter)   // one item per tile every BELT_TICKS_PER_TILE ticks
             tip += " - " + std::to_string(60 * TICKS_PER_SECOND / BELT_TICKS_PER_TILE) + " items/min - R / T to rotate";
+        else if (machineHasOutputSides(toMachine(s.b)))
+            tip += " - outputs on the green arrows, R / T to turn them";
         else if (machineTurnable(toMachine(s.b)))
             tip += " - R to turn it";
         return tip;

@@ -116,6 +116,10 @@ public:
     // stands on (as far as they fit). Nothing: none there; NoSpace: none fit.
     TakeResult pickUpUnderPlayer(ItemAmounts* got = nullptr);
 
+    // R on a placed smelter / assembler: turns its output sides by `steps`
+    // quarter turns clockwise (contents stay; recorded for undo).
+    bool turnMachine(int id, int steps);
+
     // ---- belts ----
     std::vector<Vec2i> dragTiles(Vec2i start, Vec2i end, Dir placementDir) const;
     std::vector<BeltPlan> planBelts(Vec2i start, Vec2i end, Dir placementDir) const;

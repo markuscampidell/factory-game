@@ -62,12 +62,28 @@ struct MachineSpec {
 };
 const MachineSpec& machineSpec(MachineType t);
 
-// Turning machines: a splitter has 4 directions; any other machine that is
-// not square (the miner, 2 x 3) has 2 - standing (Right, as in the spec) or
-// lying on its side (Down, w and h swapped); square machines have one.
+// Turning machines: splitters, smelters and assemblers have 4 directions;
+// the miner (2 x 3) has 2 - standing (Right, as in the spec) or lying on its
+// side (Down, w and h swapped); a storage chest has one.
 // normalizeMachineDir maps any direction to one of those.
 Dir normalizeMachineDir(MachineType t, Dir d);
 bool machineTurnable(MachineType t);          // has more than one direction
+
+// Output sides. Smelters and assemblers push only onto belts on their two
+// output sides: `dir` and the side counter-clockwise of it (Right = right +
+// top, the default; Down = bottom + right; Left = left + bottom; Up = top +
+// left). Inputs are taken from every side. Miners push onto every side;
+// storage chests only onto belts pointing straight away from them.
+inline bool machineHasOutputSides(MachineType t) { return t == MachineType::Smelter || t == MachineType::Assembler; }
+inline bool isOutputSide(MachineType t, Dir machineDir, Dir side) {
+    if (machineHasOutputSides(t)) return side == machineDir || side == rotateCW(machineDir, -1);
+    return t == MachineType::Miner;   // (storage: see computeIncoming)
+}
+// Does a machine's direction matter for placing in place (an identical
+// machine underneath) - splitters, smelters and assemblers.
+inline bool machineDirMatters(MachineType t) { return t == MachineType::Splitter || machineHasOutputSides(t); }
+// Mirroring left <-> right (blueprints): the output sides are mirrored too.
+Dir mirroredMachineDir(MachineType t, Dir d);
 Vec2i machineSize(MachineType t, Dir d);      // footprint in tiles for that direction
 bool machineTypeFromSave(const std::string& s, MachineType& out);
 

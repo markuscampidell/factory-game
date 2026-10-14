@@ -83,7 +83,7 @@ Blueprint mirrored(const Blueprint& src) {
     }
     for (auto& m : bp.machines) {
         m.off.x = src.w - m.off.x - machineSize(m.type, m.dir).x;
-        m.dir = flip(m.dir);
+        m.dir = mirroredMachineDir(m.type, m.dir);
         if (m.type == MachineType::Splitter) std::swap(m.sideFilters[0], m.sideFilters[2]);   // left <-> right
     }
     normalize(bp);

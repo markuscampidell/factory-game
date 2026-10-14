@@ -207,6 +207,10 @@ std::unique_ptr<Machine> machineFromJson(const json& j, ItemAmounts& lost) {
         Dir d = Dir::Right;
         if (j.contains("direction")) dirFromJson(j["direction"], d);
         m = makeMachine(type, pos, d);
+    } else if (machineHasOutputSides(type)) {
+        Dir d = Dir::Right;   // output sides right + top (older saves: see loadGame)
+        if (j.contains("direction")) dirFromJson(j["direction"], d);
+        m = makeMachine(type, pos, d);
     } else {
         m = makeMachine(type, pos);
     }
@@ -570,6 +574,7 @@ bool loadGame(World& w, Player& p, CameraState& cam, const std::string& name, st
             else b.itemFrom = d;
         }
 
+        std::vector<int> legacyMachines;   // smelters / assemblers saved without a direction
         for (const json& jm : data["machines"]) {
             auto m = machineFromJson(jm, lost);
             if (!m) continue;
@@ -582,7 +587,26 @@ bool loadGame(World& w, Player& p, CameraState& cam, const std::string& name, st
                 for (auto& it : machineSpec(m->type).cost) addAmount(lost, it.first, it.second);
                 continue;
             }
-            w.addMachine(std::move(m));
+            bool legacy = machineHasOutputSides(m->type) && !jm.contains("direction");
+            int id = w.addMachine(std::move(m));
+            if (legacy) legacyMachines.push_back(id);
+        }
+        // Saves from before output sides: every belt pointing straight away
+        // from a machine used to be an output. Turn each such machine so its
+        // two output sides keep as many of those belts as possible (ties:
+        // the default, right + top).
+        for (int id : legacyMachines) {
+            Machine& m = w.machine(id);
+            int best = -1;
+            for (int r = 0; r < 4; ++r) {
+                Dir d = rotateCW(Dir::Right, r);
+                int n = 0;
+                forEachOutputTile(m, [&](const OutputTile& ot) {
+                    const Belt* b = w.beltAt(ot.tile);
+                    if (b && b->dir == ot.dir && isOutputSide(m.type, d, ot.dir)) ++n;
+                });
+                if (n > best) { best = n; m.dir = d; }
+            }
         }
 
         // Anything that had nowhere to go goes into the player's inventory

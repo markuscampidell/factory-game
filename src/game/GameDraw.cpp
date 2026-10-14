@@ -216,6 +216,23 @@ const Texture2D* GameScreen::mapChunkTexture(int cx, int cy) {
     return &it->second.tex;
 }
 
+void drawOutputSideArrows(MachineType t, Dir d, Rectangle dest, unsigned char alpha) {
+    if (!machineHasOutputSides(t)) return;
+    const Color fill{90, 230, 110, alpha}, edge{20, 70, 30, alpha};
+    const float len = CELL_SIZE * 0.32f, wid = CELL_SIZE * 0.36f, inset = CELL_SIZE * 0.12f;
+    float cx = dest.x + dest.width / 2, cy = dest.y + dest.height / 2;
+    for (Dir side : {d, rotateCW(d, -1)}) {
+        Vector2 v{float(dirVec(side).x), float(dirVec(side).y)}, n{-v.y, v.x};
+        // the middle of that edge, just inside the machine, pointing out
+        float ex = cx + v.x * (dest.width / 2 - inset), ey = cy + v.y * (dest.height / 2 - inset);
+        Vector2 tip{ex, ey}, a{ex - v.x * len + n.x * wid / 2, ey - v.y * len + n.y * wid / 2},
+            b{ex - v.x * len - n.x * wid / 2, ey - v.y * len - n.y * wid / 2};
+        DrawTriangle(tip, a, b, fill);   // (both windings: raylib draws only one)
+        DrawTriangle(tip, b, a, fill);
+        DrawTriangleLines(tip, a, b, edge);
+    }
+}
+
 void drawBlueprintMap(const Blueprint& bp, Rectangle sq) {
     fillRound(sq, 6, Color{GROUND.r, GROUND.g, GROUND.b, 255});
     if (bp.w <= 0 || bp.h <= 0) return;
@@ -354,6 +371,7 @@ void GameScreen::drawItems() {
 void GameScreen::drawMachines() {
     int l, t, r, b;
     cam_.visibleTiles(l, t, r, b);
+    const bool buildingNow = mode_ == BuildMode::Building || bpMode_ == BpMode::Placing;
     std::unordered_set<int> seen;
     for (int y = t - 3; y < b + 3; ++y)
         for (int x = l - 3; x < r + 3; ++x) {
@@ -363,6 +381,8 @@ void GameScreen::drawMachines() {
             Vector2 p = toScreen(float(m.pos.x * CELL_SIZE), float(m.pos.y * CELL_SIZE));
             Rectangle dest{p.x, p.y, float(m.w * CELL_SIZE), float(m.h * CELL_SIZE)};
             assets::drawMachine(m.type, m.dir, dest);
+            // output sides: while building, and on the machine under the mouse
+            if (machineHasOutputSides(m.type) && (buildingNow || hovered_ == -(id + 1))) drawOutputSideArrows(m.type, m.dir, dest);
             float cx = dest.x + dest.width / 2, cy = dest.y + dest.height / 2;
 
             if (m.isProducing() && m.recipe && !m.recipe->outputs.empty()) {
@@ -461,6 +481,7 @@ void GameScreen::drawGhostMachine() {
     Vector2 p = toScreen(float(tl.x * CELL_SIZE), float(tl.y * CELL_SIZE));
     Rectangle dest{p.x, p.y, float(size.x * CELL_SIZE), float(size.y * CELL_SIZE)};
     assets::drawMachine(type, dir, dest, Color{255, 255, 255, 120});
+    drawOutputSideArrows(type, dir, dest, 200);
     // Alt mode: what the new machine will make (its default recipe)
     if (showOutputs_) {
         auto preview = makeMachine(type, tl, Dir(splitterRot_));
@@ -692,9 +713,17 @@ void GameScreen::drawOutputArrows() {
                 float cx = float(ot.tile.x * CELL_SIZE + CELL_SIZE / 2), cy = float(ot.tile.y * CELL_SIZE + CELL_SIZE / 2);
                 Vector2 v{float(dirVec(ot.dir).x), float(dirVec(ot.dir).y)};   // away from the machine
                 const float off = CELL_SIZE * 0.2f;
-                if (r == 0) {   // free: in or out
-                    arrow(cx + v.x * off, cy + v.y * off, v, both);
-                    arrow(cx - v.x * off, cy - v.y * off, {-v.x, -v.y}, both);
+                if (r == 0) {   // free: what a belt here could do
+                    bool canOut = m.isStorage() || isOutputSide(m.type, m.dir, ot.dir);
+                    bool canIn = m.type != MachineType::Miner;
+                    if (canOut && canIn) {
+                        arrow(cx + v.x * off, cy + v.y * off, v, both);
+                        arrow(cx - v.x * off, cy - v.y * off, {-v.x, -v.y}, both);
+                    } else if (canOut) {
+                        arrow(cx, cy, v, both);
+                    } else if (canIn) {
+                        arrow(cx, cy, {-v.x, -v.y}, both);
+                    }
                     continue;
                 }
                 const Belt& bt = world_.belt(r - 1);

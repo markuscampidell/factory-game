@@ -534,6 +534,7 @@ void GameScreen::drawBlueprintMode() {
         Vec2i p = tl + m.off;
         Rectangle r{float(p.x * CELL_SIZE), float(p.y * CELL_SIZE), float(s.x * CELL_SIZE), float(s.y * CELL_SIZE)};
         assets::drawMachine(m.type, m.dir, r, Color{255, 255, 255, 140});
+        drawOutputSideArrows(m.type, m.dir, r, 190);
         if (const Recipe* rc = findRecipe(m.recipeId); showOutputs_ && rc && !rc->outputs.empty())   // Alt mode
             drawItemIcon(rc->outputs[0].first, {r.x + r.width / 2 - 16, r.y + r.height / 2 - 16, 32, 32}, 160);
         if (c.machines[i] == PlaceStatus::Blocked) DrawRectangleRec(r, red);
@@ -619,6 +620,8 @@ void GameScreen::drawCostInfo() {
         hintBox("R: rotate    Shift + R: rotate back    T: turn around    G: mirror left / right", y);
     else if (selected_ == Buildable::Belt || selected_ == Buildable::Splitter)
         hintBox("R: rotate    Shift + R: rotate back    T: turn around", y);
+    else if (machineHasOutputSides(toMachine(selected_)))
+        hintBox("Outputs go onto belts at the green arrows    R: turn them    Shift + R: turn back    T: turn around", y);
     else if (machineTurnable(toMachine(selected_)))
         hintBox("R: turn it (standing / lying)", y);
 }
