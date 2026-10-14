@@ -274,13 +274,23 @@ static void testSideOutputs() {
     World::Overlay ov;
     ov.belts[{23, 0}] = Dir::Left;
     CHECK(v.computeIncoming({21, -1}, Dir::Right, &ov) == dirBit(Dir::Right), "preview still joins the input line");
-    // storage boxes don't dump onto belts passing by
+    // storage chests work the same way
     World u;
     u.seed = 1;
-    makeSourceStorage(u, {0, 0}, IRON_INGOT, 10);
-    line(u, {-1, -1}, Dir::Right, 4);
+    makeSourceStorage(u, {0, 0}, IRON_INGOT, 10);                      // 0..1, 0..1
+    line(u, {-1, -1}, Dir::Right, 4);                                  // past its top side ...
+    int sinkC = makeSinkStorage(u, {3, -2});                           // ... into another chest
+    int fedChest = makeSinkStorage(u, {10, 0});                        // 10..11, 0..1
+    line(u, {9, -1}, Dir::Right, 3);                                   // past its top side ...
+    u.addBelt({12, -1}, Dir::Down);
+    u.addBelt({12, 0}, Dir::Left);                                     // ... and into it
     u.ensureTopology();
-    CHECK(u.beltAt({0, -1})->incomingMask == dirBit(Dir::Right), "storage joined a passing belt");
+    CHECK(u.beltAt({0, -1})->incomingMask == (dirBit(Dir::Right) | dirBit(Dir::Up)), "chest not joined to a passing belt (mask %d)",
+          u.beltAt({0, -1})->incomingMask);
+    CHECK(w.machine(sinkA).outBelts.empty() && w.machine(sinkB).outBelts.empty(), "sink chests output onto the line that fills them");
+    CHECK(u.machine(fedChest).outBelts.empty(), "chest outputs onto the line that feeds it");
+    for (int t = 0; t < 600; ++t) u.tick();
+    CHECK(u.machine(sinkC).storage.amount(IRON_INGOT) == 10, "chest side output delivered %d of 10", u.machine(sinkC).storage.amount(IRON_INGOT));
 }
 
 // Ctrl + left click: take a machine's outputs / a chest's contents.

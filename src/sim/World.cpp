@@ -356,8 +356,8 @@ uint8_t World::computeIncoming(Vec2i pos, Dir dir, const Overlay* ov) const {
             } else if (travel == dir) {
                 // a belt pointing straight away from any machine
                 mask |= dirBit(travel);
-            } else if (m.isProducing() && !lineFeedsMachine(pos, mid, ov)) {
-                // a belt running past a producing machine's side, joined
+            } else if ((m.isProducing() || m.isStorage()) && !lineFeedsMachine(pos, mid, ov)) {
+                // a belt running past a machine's or chest's side, joined
                 // like an intersection - unless it is the machine's own
                 // input line
                 mask |= dirBit(travel);

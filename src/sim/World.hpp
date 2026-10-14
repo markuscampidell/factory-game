@@ -268,9 +268,9 @@ public:
     // Belt lines: belts and splitters connected to each other (either way
     // round). A line "feeds" a machine if any belt of it points into the
     // machine or any splitter of it has the machine on an output side.
-    // A producing machine also pushes onto belts running past its sides
-    // (not only onto belts pointing straight away) - but never onto a line
-    // that feeds it, so its input line stays clean.
+    // Machines and storage chests also push onto belts running past their
+    // sides (not only onto belts pointing straight away) - but never onto a
+    // line that feeds them, so their input line stays clean.
     bool lineFeedsMachine(Vec2i beltPos, int machineId, const Overlay* ov = nullptr) const;
 
     void markTopologyDirty() { topologyDirty_ = true; linesReady_ = false; }

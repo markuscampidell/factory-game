@@ -662,7 +662,7 @@ void GameScreen::drawFloatTexts(float dt) {
 // While holding a belt: on every side tile of the machines near the mouse a
 // double arrow shows that a belt there can go in or out. Where a belt is
 // already placed, only the matching arrow is left: green "out" (the belt
-// points away, or runs past a producing machine's side - the machine pushes
+// points away, or runs past the side of a machine or chest - it pushes
 // onto it) or blue "in" (the belt points into the machine and feeds
 // it). A belt of the machine's own input line running past gets none.
 // ---------------------------------------------------------------------------
