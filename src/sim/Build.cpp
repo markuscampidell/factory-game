@@ -356,6 +356,40 @@ Builder::TakeResult Builder::takeContents(Machine& m, ItemAmounts* got) {
     return moved.empty() ? TakeResult::NoSpace : TakeResult::Ok;
 }
 
+Builder::TakeResult Builder::pickUpUnderPlayer(ItemAmounts* got) {
+    if (got) got->clear();
+    const RectF& r = player.rect;
+    int x0 = int(std::floor(r.left() / CELL_SIZE)), x1 = int(std::floor((r.right() - 1) / CELL_SIZE));
+    int y0 = int(std::floor(r.top() / CELL_SIZE)), y1 = int(std::floor((r.bottom() - 1) / CELL_SIZE));
+    bool any = false;
+    ItemAmounts moved;
+    for (int y = y0; y <= y1; ++y)
+        for (int x = x0; x <= x1; ++x) {
+            TileRef ref = world.refAt({x, y});
+            ItemId* item = nullptr;
+            uint8_t* progress = nullptr;
+            if (ref > 0) {
+                Belt& b = world.belt(ref - 1);
+                item = &b.item;
+                progress = &b.progress;
+            } else if (ref < 0) {
+                Machine& m = world.machine(-ref - 1);
+                if (!m.isSplitter()) continue;
+                item = &m.item;
+                progress = &m.progress;
+            }
+            if (!item || *item == NO_ITEM) continue;
+            any = true;
+            if (!player.inventory.tryAdd(*item, 1)) continue;
+            addAmount(moved, *item, 1);
+            *item = NO_ITEM;
+            *progress = 0;
+        }
+    if (got) *got = moved;
+    if (!any) return TakeResult::Nothing;
+    return moved.empty() ? TakeResult::NoSpace : TakeResult::Ok;
+}
+
 // ---------------------------------------------------------------------------
 // Belts
 // ---------------------------------------------------------------------------

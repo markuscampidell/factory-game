@@ -277,6 +277,7 @@ void GameScreen::tick() {
     }
     if (craftOpen_) updateHandCrafting(player_);
     updateHandMining();
+    updatePickUp(!typing && !mapMode() && IsKeyDown(KEY_E));
     world_.tick();
 }
 
@@ -437,6 +438,28 @@ void GameScreen::updateTakeHold() {
     if (!IsMouseButtonDown(MOUSE_BUTTON_LEFT) || !ctrlDown()) { takeHolding_ = false; return; }
     Vector2 m = ui::mouse();
     if (interactionAllowed(m)) takeAt(m);
+}
+
+void GameScreen::updatePickUp(bool held) {
+    if (!held) { pickUpHeld_ = false; return; }
+    bool first = !pickUpHeld_;
+    if (first) { pickUpHeld_ = true; pickedUp_.clear(); pickUpText_.clear(); }
+    ItemAmounts got;
+    Builder::TakeResult res = builder_.pickUpUnderPlayer(&got);
+    float wx = player_.rect.cx(), wy = player_.rect.top();
+    const Color bad{255, 110, 110, 255};
+    if (res == Builder::TakeResult::Ok) {
+        for (auto& p : got) addAmount(pickedUp_, p.first, p.second);
+        // replace this hold's text with the new total (it follows the player)
+        floatTexts_.erase(std::remove_if(floatTexts_.begin(), floatTexts_.end(), [&](const FloatText& f) { return f.text == pickUpText_; }),
+                          floatTexts_.end());
+        pickUpText_ = itemDeltaText(pickedUp_);
+        floatText(wx, wy, pickUpText_, Color{120, 255, 140, 255});
+    } else if (res == Builder::TakeResult::NoSpace) {
+        if (fullMessageCooldown_ == 0) { floatText(wx, wy, "Inventory full", bad); fullMessageCooldown_ = TICKS_PER_SECOND; }
+    } else if (first) {
+        floatText(wx, wy, "No items here to pick up", bad);
+    }
 }
 
 void GameScreen::floatText(float wx, float wy, const std::string& s, Color c) {

@@ -434,6 +434,12 @@ private:
     std::set<TileRef> takenThisHold_;
     void takeAt(Vector2 p);
     void updateTakeHold();
+    // E (press or hold): pick up the items on the belts / splitters under
+    // the player. One running "+N item" text per hold.
+    bool pickUpHeld_ = false;
+    ItemAmounts pickedUp_;          // during the current hold
+    std::string pickUpText_;        // the text showing it
+    void updatePickUp(bool held);
     std::optional<Vec2i> hoveredOre_;
 
     // ---- floating texts in the world ("Copied recipe", "Inventory full") ----

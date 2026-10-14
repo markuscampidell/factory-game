@@ -112,6 +112,9 @@ public:
     // moved. Nothing: there was nothing to take; NoSpace: none of it fits.
     enum class TakeResult { Ok, Nothing, NoSpace };
     TakeResult takeContents(Machine& m, ItemAmounts* got = nullptr);
+    // E: picks up the items lying on the belts and splitters the player
+    // stands on (as far as they fit). Nothing: none there; NoSpace: none fit.
+    TakeResult pickUpUnderPlayer(ItemAmounts* got = nullptr);
 
     // ---- belts ----
     std::vector<Vec2i> dragTiles(Vec2i start, Vec2i end, Dir placementDir) const;

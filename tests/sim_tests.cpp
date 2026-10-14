@@ -329,6 +329,33 @@ static void testTakeContents() {
     std::printf("  take contents: outputs only from machines, everything from chests, as much as fits\n");
 }
 
+// E: pick up items from the belts / splitters under the player.
+static void testPickUpUnderPlayer() {
+    World w;
+    w.seed = 1;
+    Player p;
+    Builder b(w, p);
+    int b1 = w.addBelt({0, 0}, Dir::Right), b2 = w.addBelt({1, 0}, Dir::Right), far = w.addBelt({5, 0}, Dir::Right);
+    int sp = w.addMachine(makeMachine(MachineType::Splitter, {0, 1}, Dir::Right));
+    w.belt(b1).item = IRON_ORE;
+    w.belt(b2).item = COAL;
+    w.belt(far).item = COAL;
+    w.machine(sp).item = IRON_ORE;
+    p.setCenter(CELL_SIZE, CELL_SIZE);   // straddles tiles (0,0) (1,0) (0,1) (1,1)
+    ItemAmounts got;
+    CHECK(b.pickUpUnderPlayer(&got) == Builder::TakeResult::Ok, "pick up failed");
+    auto g = asMap(got);
+    CHECK(g[IRON_ORE] == 2 && g[COAL] == 1, "picked up %d ore, %d coal", g[IRON_ORE], g[COAL]);
+    CHECK(w.belt(b1).item == NO_ITEM && w.machine(sp).item == NO_ITEM && w.belt(far).item == COAL, "wrong tiles emptied");
+    CHECK(b.pickUpUnderPlayer(&got) == Builder::TakeResult::Nothing, "empty tiles not reported");
+    // full inventory: the item stays on the belt
+    while (p.inventory.tryAdd(COPPER_INGOT, 1)) {}
+    while (p.inventory.tryAdd(COAL, 1)) {}   // (the coal stack from above has room too)
+    w.belt(b2).item = COAL;
+    CHECK(b.pickUpUnderPlayer(&got) == Builder::TakeResult::NoSpace && w.belt(b2).item == COAL, "full inventory lost the item");
+    std::printf("  pick up (E): belts and splitters under the player, as much as fits\n");
+}
+
 // ---------------------------------------------------------------------------
 // Value of everything = items held + build cost of everything built.
 static std::map<ItemId, int> worldValue(World& w, Player& p) {
@@ -853,6 +880,7 @@ int main(int argc, char** argv) {
     testProductionChain();
     testSideOutputs();
     testTakeContents();
+    testPickUpUnderPlayer();
     testHandCraftingAndRecipeSwitch();
     std::printf("Item conservation\n");
     testConservationFuzz();
