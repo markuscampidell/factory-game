@@ -37,6 +37,7 @@ Vector2 GameScreen::toScreen(float wx, float wy) const { return {wx, wy}; }
 // ---------------------------------------------------------------------------
 void GameScreen::draw() {
     float dt = GetFrameTime();
+    ++frameNo_;
     // what's under the mouse right now (delete target / hover highlight)
     validatePanels();
     hoveredDelete_ = mode_ == BuildMode::Deleting ? world_.refAt(mouseTile()) : 0;
@@ -180,24 +181,39 @@ Color machineMapColor(MachineType t) {
     }
 }
 
-const Texture2D* GameScreen::mapTerrainTexture(int cx, int cy) {
-    if (!world_.isExplored(cx, cy)) return nullptr;
+const Texture2D* GameScreen::mapChunkTexture(int cx, int cy) {
+    bool explored = world_.isExplored(cx, cy);
+    const Chunk* ch = world_.chunk(cx, cy, false);
+    bool built = ch && ch->occupants > 0;
+    if (!explored && !built) return nullptr;
+    uint32_t version = ch ? ch->version : 0;
     Vec2i key{cx, cy};
-    auto it = mapTerrain_.find(key);
-    if (it == mapTerrain_.end()) {
-        Image img = GenImageColor(CHUNK_SIZE, CHUNK_SIZE, GROUND);
-        for (int y = 0; y < CHUNK_SIZE; ++y)
-            for (int x = 0; x < CHUNK_SIZE; ++x) {
-                uint8_t tt = world_.tileType({cx * CHUNK_SIZE + x, cy * CHUNK_SIZE + y});
-                if (tt) ImageDrawPixel(&img, x, y, oreMapColor(tt));
-            }
-        Texture2D tex = LoadTextureFromImage(img);
-        UnloadImage(img);
+    auto it = mapChunks_.find(key);
+    if (it != mapChunks_.end() && it->second.version == version && it->second.explored == explored) return &it->second.tex;
+
+    // terrain (black where unexplored), belts grey, machines in their colour
+    const Color beltColor{150, 150, 150, 255};
+    Color px[CHUNK_SIZE * CHUNK_SIZE];
+    for (int y = 0; y < CHUNK_SIZE; ++y)
+        for (int x = 0; x < CHUNK_SIZE; ++x) {
+            int i = y * CHUNK_SIZE + x;
+            TileRef r = ch ? ch->refs[size_t(i)] : 0;
+            if (r > 0) px[i] = beltColor;
+            else if (r < 0) px[i] = machineMapColor(world_.machine(-r - 1).type);
+            else px[i] = explored ? oreMapColor(world_.tileType({cx * CHUNK_SIZE + x, cy * CHUNK_SIZE + y})) : BLACK;
+        }
+    if (it != mapChunks_.end()) {
+        UpdateTexture(it->second.tex, px);   // same size: just new pixels
+    } else {
+        Image img{px, CHUNK_SIZE, CHUNK_SIZE, 1, PIXELFORMAT_UNCOMPRESSED_R8G8B8A8};
+        Texture2D tex = LoadTextureFromImage(img);   // (copies the pixels)
         // clamp so the edge pixels never sample the opposite edge
         SetTextureWrap(tex, TEXTURE_WRAP_CLAMP);
-        it = mapTerrain_.emplace(key, tex).first;
+        it = mapChunks_.emplace(key, MapChunkTex{tex, 0, false}).first;
     }
-    return &it->second;
+    it->second.version = version;
+    it->second.explored = explored;
+    return &it->second.tex;
 }
 
 void drawBlueprintMap(const Blueprint& bp, Rectangle sq) {
@@ -223,39 +239,18 @@ void GameScreen::drawMapView() {
     int cx1 = floorDiv(r, CHUNK_SIZE), cy1 = floorDiv(b, CHUNK_SIZE);
     const float chunkPx = float(CHUNK_SIZE * CELL_SIZE);
 
-    // terrain: one tiny cached texture per explored chunk; chunks the player
-    // hasn't walked to yet stay black (and are NOT generated here). One black
-    // rectangle behind everything, so zoomed far out it isn't thousands.
+    // One tiny cached texture per chunk (terrain + belts + machines, see
+    // mapChunkTexture); chunks the player hasn't walked to yet stay black
+    // (and are NOT generated here). One black rectangle behind everything,
+    // so zoomed far out it isn't thousands.
     DrawRectangleRec({float(cx0) * chunkPx, float(cy0) * chunkPx, float(cx1 - cx0 + 1) * chunkPx, float(cy1 - cy0 + 1) * chunkPx}, BLACK);
+    // overlap neighbours by one screen pixel so no gap can appear between
+    // chunks at fractional zoom levels
+    const float pad = 1.0f / cam_.zoom;
     for (int cy = cy0; cy <= cy1; ++cy)
-        for (int cx = cx0; cx <= cx1; ++cx) {
-            if (!world_.isExplored(cx, cy)) continue;
-            // overlap neighbours by one screen pixel so no gap can appear
-            // between chunks at fractional zoom levels
-            float pad = 1.0f / cam_.zoom;
-            drawTexture(*mapTerrainTexture(cx, cy), {cx * chunkPx, cy * chunkPx, chunkPx + pad, chunkPx + pad});
-        }
-
-    // belts and machines: walk only chunks that contain something
-    const Color beltColor{150, 150, 150, 255};
-    std::unordered_set<int> seen;
-    for (int cy = cy0; cy <= cy1; ++cy)
-        for (int cx = cx0; cx <= cx1; ++cx) {
-            const Chunk* ch = world_.chunk(cx, cy, false);
-            if (!ch || ch->occupants == 0) continue;
-            for (int i = 0; i < CHUNK_SIZE * CHUNK_SIZE; ++i) {
-                TileRef ref = ch->refs[size_t(i)];
-                if (ref > 0) {
-                    float x = float((cx * CHUNK_SIZE + i % CHUNK_SIZE) * CELL_SIZE);
-                    float y = float((cy * CHUNK_SIZE + i / CHUNK_SIZE) * CELL_SIZE);
-                    DrawRectangleRec({x, y, CELL_SIZE, CELL_SIZE}, beltColor);
-                } else if (ref < 0 && seen.insert(-ref - 1).second) {
-                    const Machine& m = world_.machine(-ref - 1);
-                    DrawRectangleRec({float(m.pos.x * CELL_SIZE), float(m.pos.y * CELL_SIZE),
-                                      float(m.w * CELL_SIZE), float(m.h * CELL_SIZE)}, machineMapColor(m.type));
-                }
-            }
-        }
+        for (int cx = cx0; cx <= cx1; ++cx)
+            if (const Texture2D* tex = mapChunkTexture(cx, cy))
+                drawTexture(*tex, {cx * chunkPx, cy * chunkPx, chunkPx + pad, chunkPx + pad});
 
     // player: a box that stays visible however far out you zoom
     float s = std::max(player_.rect.w, 8.0f / cam_.zoom);
@@ -293,29 +288,8 @@ void GameScreen::drawMinimap() {
     DrawRectangleRec(r, BLACK);   // undiscovered
     for (int cy = cy0; cy <= cy1; ++cy)
         for (int cx = cx0; cx <= cx1; ++cx)
-            if (const Texture2D* tex = mapTerrainTexture(cx, cy))
+            if (const Texture2D* tex = mapChunkTexture(cx, cy))
                 drawTexture(*tex, {mx(float(cx * chunkWorld)), my(float(cy * chunkWorld)), chunkPx + 0.5f, chunkPx + 0.5f});
-
-    const Color beltColor{150, 150, 150, 255};
-    const float tilePx = float(CELL_SIZE) * k;
-    std::unordered_set<int> seen;
-    for (int cy = cy0; cy <= cy1; ++cy)
-        for (int cx = cx0; cx <= cx1; ++cx) {
-            const Chunk* ch = world_.chunk(cx, cy, false);
-            if (!ch || ch->occupants == 0) continue;
-            for (int i = 0; i < CHUNK_SIZE * CHUNK_SIZE; ++i) {
-                TileRef ref = ch->refs[size_t(i)];
-                if (ref > 0) {
-                    float x = float((cx * CHUNK_SIZE + i % CHUNK_SIZE) * CELL_SIZE);
-                    float y = float((cy * CHUNK_SIZE + i / CHUNK_SIZE) * CELL_SIZE);
-                    DrawRectangleRec({mx(x), my(y), tilePx, tilePx}, beltColor);
-                } else if (ref < 0 && seen.insert(-ref - 1).second) {
-                    const Machine& m = world_.machine(-ref - 1);
-                    DrawRectangleRec({mx(float(m.pos.x * CELL_SIZE)), my(float(m.pos.y * CELL_SIZE)), m.w * tilePx, m.h * tilePx},
-                                     machineMapColor(m.type));
-                }
-            }
-        }
 
     // map markers
     for (const MapMarker& mk : markers_) {

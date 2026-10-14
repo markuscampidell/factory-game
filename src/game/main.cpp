@@ -122,6 +122,7 @@ int main() {
     emscripten_set_main_loop_arg(webFrame, &app, 0, 1);   // never returns
 #else
     while (!WindowShouldClose() && !app.quit) frame(app);
+    save::waitForSaves();   // a save still being written in the background
     app.game.reset();
     app.menu.reset();
     assets::unload();

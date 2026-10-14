@@ -105,6 +105,12 @@ private:
     double accumulator_ = 0;
     float interp_ = 0;            // 0..1 between the last two ticks
     float fps_ = 0;
+    uint64_t frameNo_ = 0;   // +1 every draw()
+    // The held blueprint checked at the mouse - the ghost and the "Needs:" box
+    // both need it; computed once per frame.
+    struct BpCheckCache { uint64_t frame = ~0ull; Vec2i tl; bool replace = false; Builder::BlueprintCheck check; };
+    BpCheckCache bpCheck_;
+    const Builder::BlueprintCheck& heldBlueprintCheck(Vec2i tl, bool replace);
     std::string saveName_;
 
     // ---- zoom / map view ----
@@ -146,7 +152,11 @@ private:
     Vector2 mapDragLast_{};          // real window pixels
     void updateMapDrag();
     void drawMapView();
-    std::unordered_map<Vec2i, Texture2D, Vec2iHash> mapTerrain_; // 1 pixel per tile, per chunk
+    // Map view / minimap: one small texture per chunk, 1 pixel per tile -
+    // terrain plus belts and machines. Rebuilt only when the chunk changes.
+    struct MapChunkTex { Texture2D tex{}; uint32_t version = 0; bool explored = false; };
+    std::unordered_map<Vec2i, MapChunkTex, Vec2iHash> mapChunks_;
+    void clearMapChunks();
 
     // ---- build state ----
     BuildMode mode_ = BuildMode::None;
@@ -366,7 +376,7 @@ private:
     void drawMinimap();
     // 1 pixel per tile terrain texture of an explored chunk (map view and
     // minimap); nullptr if the chunk hasn't been discovered
-    const Texture2D* mapTerrainTexture(int cx, int cy);
+    const Texture2D* mapChunkTexture(int cx, int cy);   // nullptr: nothing to show (black)
     bool overHudButtons(Vector2 p) const;
     std::string hudButtonTooltip(Vector2 p) const;   // "" if not over a button
     void drawHudTooltips();

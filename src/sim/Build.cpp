@@ -594,12 +594,12 @@ Builder::UndoResult Builder::undo(const UndoRecord& rec, ItemAmounts* delta, Und
     if (rec.empty()) return UndoResult::Nothing;
     // 1. everything the action added must still be there
     std::vector<int> belts, machines;
-    std::set<int> machineSet;
+    std::unordered_set<int> beltSet, machineSet;
     for (const ObjSnap& a : rec.added) {
         if (a.belt) {
             int id = world.beltIdAt(a.pos);
             if (id < 0) return UndoResult::Changed;
-            if (std::find(belts.begin(), belts.end(), id) == belts.end()) belts.push_back(id);
+            if (beltSet.insert(id).second) belts.push_back(id);
         } else {
             int id = world.machineIdAt(a.pos);
             if (id < 0 || world.machine(id).pos != a.pos || world.machine(id).type != a.type) return UndoResult::Changed;
@@ -607,17 +607,17 @@ Builder::UndoResult Builder::undo(const UndoRecord& rec, ItemAmounts* delta, Und
         }
     }
     // 2. the old things must fit where they were (what step 1 removes is free)
-    std::set<std::pair<int, int>> freed;
-    for (int id : belts) freed.insert({world.belt(id).pos.x, world.belt(id).pos.y});
+    std::unordered_set<Vec2i, Vec2iHash> freed;
+    for (int id : belts) freed.insert(world.belt(id).pos);
     for (int id : machines) {
         const Machine& m = world.machine(id);
-        for (Vec2i c : footprint(m.pos, m.w, m.h)) freed.insert({c.x, c.y});
+        for (Vec2i c : footprint(m.pos, m.w, m.h)) freed.insert(c);
     }
-    std::set<std::pair<int, int>> taken;
+    std::unordered_set<Vec2i, Vec2iHash> taken;
     for (const ObjSnap& s : rec.removed) {
         int w = s.belt ? 1 : s.machine->w, h = s.belt ? 1 : s.machine->h;
         for (Vec2i c : footprint(s.pos, w, h)) {
-            if ((world.isCellBlocked(c) && !freed.count({c.x, c.y})) || !taken.insert({c.x, c.y}).second) return UndoResult::Blocked;
+            if ((world.isCellBlocked(c) && !freed.count(c)) || !taken.insert(c).second) return UndoResult::Blocked;
             if (isBlockedByPlayer(c)) return UndoResult::PlayerInTheWay;
         }
     }

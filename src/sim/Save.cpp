@@ -5,14 +5,21 @@
 #include <cmath>
 #include <filesystem>
 #include <fstream>
+#include <memory>
 #include <random>
+#ifndef __EMSCRIPTEN__
+#include <future>
+#endif
 
 #ifdef __EMSCRIPTEN__
 #include <emscripten/emscripten.h>
 #endif
 
 namespace fs = std::filesystem;
-using json = nlohmann::json;
+// ordered_json keeps keys in the order they are written, so "play_time"
+// sits near the top of a save and the main menu can read it without
+// parsing the whole file (see readPlayTime). Loading doesn't care.
+using json = nlohmann::ordered_json;
 
 namespace save {
 
@@ -293,6 +300,7 @@ bool exists(const std::string& name) {
 }
 
 std::vector<std::string> listSaves() {
+    waitForSaves();
     std::vector<std::string> out;
     std::error_code ec;
     for (auto& e : fs::directory_iterator(dirPath(), ec)) {
@@ -302,25 +310,51 @@ std::vector<std::string> listSaves() {
     return out;
 }
 
+namespace {
+// Reads only up to the top-level "play_time" and stops there (no tree is
+// built). New saves have it near the start; older ones further down.
+struct PlayTimeReader : nlohmann::json_sax<json> {
+    int depth = 0;
+    bool wantValue = false;   // the next value is the top-level play_time
+    double result = 0;
+    bool found = false;
+    bool number(double v) { if (wantValue) { result = v; found = true; return false; } return true; }
+    bool null() override { return value(); }
+    bool boolean(bool) override { return value(); }
+    bool number_integer(number_integer_t v) override { return number(double(v)); }
+    bool number_unsigned(number_unsigned_t v) override { return number(double(v)); }
+    bool number_float(number_float_t v, const string_t&) override { return number(double(v)); }
+    bool string(string_t&) override { return value(); }
+    bool binary(binary_t&) override { return value(); }
+    bool start_object(std::size_t) override { wantValue = false; ++depth; return true; }
+    bool end_object() override { --depth; return true; }
+    bool start_array(std::size_t) override { wantValue = false; ++depth; return true; }
+    bool end_array() override { --depth; return true; }
+    bool key(string_t& k) override { wantValue = depth == 1 && k == "play_time"; return true; }
+    bool parse_error(std::size_t, const std::string&, const nlohmann::detail::exception&) override { return false; }
+    bool value() { wantValue = false; return true; }
+};
+} // namespace
+
 double readPlayTime(const std::string& name) {
+    waitForSaves();
     std::ifstream f(pathFor(name));
     if (!f) return -1;
-    try {
-        json data;
-        f >> data;
-        return std::max(0.0, data.value("play_time", 0.0));
-    } catch (const std::exception&) {
-        return -1;
-    }
+    PlayTimeReader r;
+    bool complete = json::sax_parse(f, &r);
+    if (r.found) return std::max(0.0, r.result);
+    return complete ? 0 : -1;   // a whole valid file without it counts as 0 (like before)
 }
 
 void remove(const std::string& name) {
+    waitForSaves();
     std::error_code ec;
     fs::remove(pathFor(name), ec);
     persist();
 }
 
 bool rename(const std::string& oldName, const std::string& newName) {
+    waitForSaves();
     bool wasLast = lastOpened() == oldName;
     std::error_code ec;
     fs::rename(pathFor(oldName), pathFor(newName), ec);
@@ -348,19 +382,54 @@ void setLastOpened(const std::string& name) {
     persist();
 }
 
-bool saveGame(const World& w, const Player& p, const CameraState& cam, const std::string& name, std::string* error) {
+namespace {
+// Everything a save file contains, copied out of the world. Copying is quick
+// (a few ms even for huge factories); turning it into JSON and writing the
+// file is the slow part, which can then happen on another thread.
+struct SaveData {
+    int64_t seed = 0;
+    float px = 0, py = 0;
+    Inventory inventory;
+    CameraState cam;
+    std::vector<Belt> belts;          // alive ones
+    std::vector<Machine> machines;    // alive ones
+    std::vector<Vec2i> explored;
+};
+
+std::unique_ptr<SaveData> snapshot(const World& w, const Player& p, const CameraState& cam) {
+    auto d = std::make_unique<SaveData>();
+    d->seed = w.seed;
+    d->px = p.rect.cx();
+    d->py = p.rect.cy();
+    d->inventory = p.inventory;
+    d->cam = cam;
+    d->belts.reserve(w.belts().size());
+    for (const Belt& b : w.belts()) if (b.alive) d->belts.push_back(b);
+    d->machines.reserve(w.machineSlots());
+    for (size_t i = 0; i < w.machineSlots(); ++i) {
+        if (!w.machineAlive(int(i))) continue;
+        d->machines.push_back(w.machine(int(i)));
+        d->machines.back().anims.clear();
+    }
+    // a miner's recipe lives inside it: point at the copy, not the world's
+    // machine (which may be deleted while the copy is being saved)
+    for (Machine& m : d->machines) if (m.type == MachineType::Miner) m.recipe = &m.minerRecipe;
+    d->explored.assign(w.explored().begin(), w.explored().end());
+    return d;
+}
+
+bool writeSave(const SaveData& d, const std::string& name, std::string* error) {
     json data;
     data["version"] = SAVE_VERSION;
-    data["player"] = {{"x", p.rect.cx()}, {"y", p.rect.cy()}, {"inventory", slotsToJson(p.inventory)}};
-    data["camera"] = {{"x", cam.x}, {"y", cam.y}, {"zoom", cam.zoom}, {"show_outputs", cam.showOutputs}};
+    data["play_time"] = d.cam.playSeconds;   // first, for readPlayTime
+    data["player"] = {{"x", d.px}, {"y", d.py}, {"inventory", slotsToJson(d.inventory)}};
+    data["camera"] = {{"x", d.cam.x}, {"y", d.cam.y}, {"zoom", d.cam.zoom}, {"show_outputs", d.cam.showOutputs}};
     json markers = json::array();
-    for (const MapMarker& m : cam.markers) markers.push_back({{"x", m.tile.x}, {"y", m.tile.y}, {"name", m.name}, {"symbol", m.symbol}});
-    data["markers"] = markers;
-    data["play_time"] = cam.playSeconds;
-    data["seed"] = w.seed;
+    for (const MapMarker& m : d.cam.markers) markers.push_back({{"x", m.tile.x}, {"y", m.tile.y}, {"name", m.name}, {"symbol", m.symbol}});
+    data["markers"] = std::move(markers);
+    data["seed"] = d.seed;
     json belts = json::array();
-    for (const Belt& b : w.belts()) {
-        if (!b.alive) continue;
+    for (const Belt& b : d.belts) {
         json jb;
         jb["grid_pos"] = json::array({b.pos.x, b.pos.y});
         jb["direction"] = dirToJson(b.dir);
@@ -368,16 +437,15 @@ bool saveGame(const World& w, const Player& p, const CameraState& cam, const std
         jb["filter"] = filterToJson(b.filter);
         jb["progress"] = b.progress;               // C++ extra
         jb["item_from"] = dirToJson(b.itemFrom);   // C++ extra
-        belts.push_back(jb);
+        belts.push_back(std::move(jb));
     }
-    data["belts"] = belts;
+    data["belts"] = std::move(belts);
     json machines = json::array();
-    for (size_t i = 0; i < w.machineSlots(); ++i)
-        if (w.machineAlive(int(i))) machines.push_back(machineToJson(w.machine(int(i))));
-    data["machines"] = machines;
+    for (const Machine& m : d.machines) machines.push_back(machineToJson(m));
+    data["machines"] = std::move(machines);
     json explored = json::array();   // C++ extra: chunks the player has seen
-    for (Vec2i c : w.explored()) explored.push_back(json::array({c.x, c.y}));
-    data["explored_chunks"] = explored;
+    for (Vec2i c : d.explored) explored.push_back(json::array({c.x, c.y}));
+    data["explored_chunks"] = std::move(explored);
 
     fs::path path = pathFor(name);
     fs::path tmp = path;
@@ -396,11 +464,58 @@ bool saveGame(const World& w, const Player& p, const CameraState& cam, const std
         fs::rename(tmp, path, ec);
         if (ec) { if (error) *error = ec.message(); return false; }
     }
+    return true;
+}
+
+#ifndef __EMSCRIPTEN__
+std::future<std::string> g_pending;   // background save: "" = ok, else the error
+#endif
+std::string g_saveError;              // error of a finished background save
+} // namespace
+
+bool saveGame(const World& w, const Player& p, const CameraState& cam, const std::string& name, std::string* error) {
+    waitForSaves();
+    bool ok = writeSave(*snapshot(w, p, cam), name, error);
     persist();
+    return ok;
+}
+
+void saveGameInBackground(const World& w, const Player& p, const CameraState& cam, const std::string& name) {
+#ifdef __EMSCRIPTEN__
+    std::string err;   // the browser build has no threads
+    if (!saveGame(w, p, cam, name, &err)) g_saveError = err;
+#else
+    waitForSaves();    // one save at a time
+    std::shared_ptr<SaveData> d = snapshot(w, p, cam);
+    g_pending = std::async(std::launch::async, [d, name]() {
+        std::string err;
+        return writeSave(*d, name, &err) ? std::string() : (err.empty() ? std::string("unknown error") : err);
+    });
+#endif
+}
+
+void waitForSaves() {
+#ifndef __EMSCRIPTEN__
+    if (g_pending.valid()) {
+        std::string err = g_pending.get();
+        if (!err.empty()) g_saveError = err;
+    }
+#endif
+}
+
+bool takeSaveError(std::string& error) {
+#ifndef __EMSCRIPTEN__
+    using namespace std::chrono_literals;
+    if (g_pending.valid() && g_pending.wait_for(0s) == std::future_status::ready) waitForSaves();
+#endif
+    if (g_saveError.empty()) return false;
+    error = g_saveError;
+    g_saveError.clear();
     return true;
 }
 
 bool loadGame(World& w, Player& p, CameraState& cam, const std::string& name, std::string* error) {
+    waitForSaves();
     std::ifstream f(pathFor(name));
     if (!f) { if (error) *error = "Save not found"; return false; }
     json data;

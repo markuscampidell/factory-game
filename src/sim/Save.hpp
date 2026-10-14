@@ -45,6 +45,13 @@ std::string lastOpened();                 // "" if none
 void setLastOpened(const std::string& name);
 
 bool saveGame(const World& w, const Player& p, const CameraState& cam, const std::string& name, std::string* error = nullptr);
+// The same, but only copying the world happens now (a few ms); building and
+// writing the file runs on a background thread (desktop; the browser saves
+// right away). Everything else in save:: that reads or writes save files
+// waits for it first. takeSaveError() reports a background save that failed.
+void saveGameInBackground(const World& w, const Player& p, const CameraState& cam, const std::string& name);
+void waitForSaves();
+bool takeSaveError(std::string& error);
 bool loadGame(World& w, Player& p, CameraState& cam, const std::string& name, std::string* error = nullptr);
 // Fresh world + empty inventory; also writes the save immediately.
 void newGame(World& w, Player& p, CameraState& cam, const std::string& name);

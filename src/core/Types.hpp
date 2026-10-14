@@ -18,6 +18,8 @@ constexpr int BELT_TICKS_PER_TILE = 15;
 
 constexpr int CELL_SIZE = 32;   // pixels per tile
 constexpr int CHUNK_SIZE = 32;  // tiles per chunk edge
+constexpr int CHUNK_SHIFT = 5;  // CHUNK_SIZE == 1 << CHUNK_SHIFT (fast tile -> chunk math)
+static_assert(CHUNK_SIZE == 1 << CHUNK_SHIFT, "CHUNK_SIZE must be a power of two");
 
 // ---------------------------------------------------------------------------
 // Integer 2D vector (tile coordinates, directions)

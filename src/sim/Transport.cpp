@@ -42,15 +42,15 @@ struct Transport {
     static bool ready(const Machine& s) { return s.item != NO_ITEM && s.progress >= T; }
 
     // ------------------------------------------------------------------
-    // Graph edges (only used to build the processing order)
+    // Graph edges (only used to build the processing order). Uses the
+    // neighbours cached by ensureTopology (frontRef / sideRef).
     // ------------------------------------------------------------------
     int edges(int node, int out[3]) {
         int n = 0;
         if (node < beltCount()) {
             const Belt& b = w.belts_[size_t(node)];
             if (!b.alive) return 0;
-            Vec2i t = b.pos + dirVec(b.dir);
-            TileRef r = w.refAt(t);
+            TileRef r = b.frontRef;
             if (r > 0) {
                 const Belt& y = w.belts_[size_t(r - 1)];
                 if (b.dir != opposite(y.dir)) out[n++] = r - 1;
@@ -63,7 +63,7 @@ struct Transport {
             const Machine& s = *w.machines_[size_t(mid)];
             for (int i = 0; i < 3; ++i) {
                 Dir sd = s.sideDir(i);
-                TileRef r = w.refAt(s.pos + dirVec(sd));
+                TileRef r = s.sideRef[size_t(i)];
                 if (r > 0) {
                     if (sd != opposite(w.belts_[size_t(r - 1)].dir)) out[n++] = r - 1;
                 } else if (r < 0) {
@@ -451,10 +451,10 @@ struct Transport {
             b.reservedFor = -1;
             if (b.item != NO_ITEM && b.progress < T) ++b.progress;
         }
-        for (auto& mp : w.machines_) {
-            if (!mp || !mp->alive || !mp->isSplitter()) continue;
-            mp->reservedFor = -1;
-            if (mp->item != NO_ITEM && mp->progress < T) ++mp->progress;
+        for (int mid : w.splitterIds_) {
+            Machine& s = *w.machines_[size_t(mid)];
+            s.reservedFor = -1;
+            if (s.item != NO_ITEM && s.progress < T) ++s.progress;
         }
         // 2) move items, downstream first
         for (const auto& scc : w.sccs_) {
@@ -506,9 +506,9 @@ void World::machinesTick() {
             }
         }
     }
-    for (auto& mp : machines_) {
-        if (!mp || !mp->alive || mp->anims.empty()) continue;
-        auto& a = mp->anims;
+    for (int mid : producers_) {   // every machine that can get input animations
+        auto& a = machines_[size_t(mid)]->anims;
+        if (a.empty()) continue;
         for (auto& an : a) ++an.ticks;
         a.erase(std::remove_if(a.begin(), a.end(), [](const InputAnim& x) { return x.ticks >= x.duration; }), a.end());
     }

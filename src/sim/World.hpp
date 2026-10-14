@@ -148,6 +148,17 @@ std::unique_ptr<Machine> makeMachine(MachineType type, Vec2i topLeft, Dir dir = 
 // Same order as Python's _compute_output_tiles.
 struct OutputTile { Vec2i tile; Dir dir; };
 std::vector<OutputTile> machineOutputTiles(const Machine& m);
+// The same tiles without building a vector: f(OutputTile).
+template <class F> void forEachOutputTile(const Machine& m, F f) {
+    for (int dy = 0; dy < m.h; ++dy) {
+        f(OutputTile{{m.pos.x + m.w, m.pos.y + dy}, Dir::Right});
+        f(OutputTile{{m.pos.x - 1, m.pos.y + dy}, Dir::Left});
+    }
+    for (int dx = 0; dx < m.w; ++dx) {
+        f(OutputTile{{m.pos.x + dx, m.pos.y - 1}, Dir::Up});
+        f(OutputTile{{m.pos.x + dx, m.pos.y + m.h}, Dir::Down});
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Tile references and chunks
@@ -160,7 +171,13 @@ struct Chunk {
     std::array<uint8_t, CHUNK_SIZE * CHUNK_SIZE> terrain{};
     bool terrainReady = false;
     int occupants = 0;
+    uint32_t version = 0;   // +1 whenever a tile ref changes (map view caches)
 };
+
+// Tile -> chunk coordinates / index inside the chunk (floor division, so
+// negative tiles work: -1 -> chunk -1, index 31).
+inline Vec2i chunkOf(Vec2i t) { return {t.x >> CHUNK_SHIFT, t.y >> CHUNK_SHIFT}; }
+inline size_t tileIndex(Vec2i t) { return size_t((t.y & (CHUNK_SIZE - 1)) * CHUNK_SIZE + (t.x & (CHUNK_SIZE - 1))); }
 
 // ---------------------------------------------------------------------------
 // Undo records: what one player action changed (see World::recordChanges and
@@ -193,7 +210,7 @@ public:
     // one the builder changes in place, see noteChanged*) is written into
     // the pending record; takeRecord() hands it over and starts a new one.
     bool recordChanges = false;
-    UndoRecord takeRecord() { UndoRecord r = std::move(record_); record_ = {}; return r; }
+    UndoRecord takeRecord() { UndoRecord r = std::move(record_); record_ = {}; addedKeys_.clear(); return r; }
     void noteChangedBelt(int id);      // call BEFORE changing it in place
     void noteChangedMachine(int id);
 
@@ -274,6 +291,19 @@ public:
 private:
     void setRef(Vec2i t, TileRef r);
     void ensureTerrain(Chunk& c, int cx, int cy);
+    // Chunk lookup with a one-entry cache: neighbouring tiles are almost
+    // always in the same chunk, so most lookups skip the hash map. (Chunks
+    // are only ever removed by clear(), which resets the cache.)
+    Chunk* findChunk(Vec2i key) const {
+        if (lastChunk_ && key == lastChunkKey_) return lastChunk_;
+        auto it = chunks_.find(key);
+        if (it == chunks_.end()) return nullptr;
+        lastChunkKey_ = key;
+        lastChunk_ = it->second.get();
+        return lastChunk_;
+    }
+    mutable Vec2i lastChunkKey_;
+    mutable Chunk* lastChunk_ = nullptr;
 
     // transport (Transport.cpp)
     friend struct Transport;
@@ -297,6 +327,16 @@ private:
     void rebuildLines();
     uint64_t tickCount_ = 0;
     UndoRecord record_;
+    // What record_.added holds, for quick "added in this record?" checks
+    // (ObjSnap::sameObject: belt or machine type, at a position).
+    struct SnapKey {
+        Vec2i pos; uint8_t kind;   // MachineType, or 255 for a belt
+        bool operator==(const SnapKey& o) const { return pos == o.pos && kind == o.kind; }
+    };
+    struct SnapKeyHash { size_t operator()(const SnapKey& k) const { return Vec2iHash()(k.pos) ^ (size_t(k.kind) * 0x9e3779b97f4a7c15ULL); } };
+    static SnapKey snapKey(const ObjSnap& s) { return {s.pos, uint8_t(s.belt ? 255 : int(s.type))}; }
+    std::unordered_map<SnapKey, int, SnapKeyHash> addedKeys_;   // -> how many entries
+    bool inAdded(const ObjSnap& s) const { return addedKeys_.count(snapKey(s)) != 0; }
     void recordRemoved(ObjSnap snap);
     void recordAdded(ObjSnap key);
 
@@ -307,5 +347,6 @@ private:
     std::vector<Scc> sccs_;
     std::vector<int> cycleNext_;   // for simple cycles: next node in the cycle (by belt id)
     std::vector<int> producers_;   // machine ids that can push items out
+    std::vector<int> splitterIds_; // machine ids of splitters
     std::vector<int> producingIds_; // machine ids that run recipes
 };

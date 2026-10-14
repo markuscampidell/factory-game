@@ -65,8 +65,11 @@ GameScreen::GameScreen() {
     world_.recordChanges = true;       // for undo (Ctrl + Z)
 }
 
-GameScreen::~GameScreen() {
-    for (auto& kv : mapTerrain_) UnloadTexture(kv.second);
+GameScreen::~GameScreen() { clearMapChunks(); }
+
+void GameScreen::clearMapChunks() {
+    for (auto& kv : mapChunks_) UnloadTexture(kv.second.tex);
+    mapChunks_.clear();
 }
 
 // ---------------------------------------------------------------------------
@@ -180,6 +183,7 @@ void GameScreen::enterMapMode() {
 void GameScreen::newGame(const std::string& name) {
     CameraState cs;
     save::newGame(world_, player_, cs, name);
+    clearMapChunks();
     world_.takeRecord();   // building the world isn't something to undo
     undoStack_.clear();
     redoStack_.clear();
@@ -193,6 +197,7 @@ void GameScreen::newGame(const std::string& name) {
 bool GameScreen::loadGame(const std::string& name, std::string* error) {
     CameraState cs;
     if (!save::loadGame(world_, player_, cs, name, error)) return false;
+    clearMapChunks();
     world_.takeRecord();   // loading isn't something to undo
     undoStack_.clear();
     redoStack_.clear();
@@ -209,8 +214,7 @@ bool GameScreen::loadGame(const std::string& name, std::string* error) {
 
 void GameScreen::saveNow(const std::string& name) {
     CameraState cs{cam_.x, cam_.y, true, cam_.zoom, showOutputs_, markers_, playSeconds_};
-    std::string err;
-    if (!save::saveGame(world_, player_, cs, name, &err)) notify("Saving failed: " + err);
+    save::saveGameInBackground(world_, player_, cs, name);   // no freeze, even for huge factories
 }
 
 // ---------------------------------------------------------------------------
@@ -226,6 +230,7 @@ void GameScreen::update(float dt) {
     cam_.h = float(GetScreenHeight());
     fps_ = float(GetFPS());
     if (toastTime_ > 0) toastTime_ -= dt;
+    if (std::string err; save::takeSaveError(err)) notify("Saving failed: " + err);
 
     if (!menuOpen_ && !controlsOpen_) {   // the game pauses behind these
         const double step = 1.0 / TICKS_PER_SECOND;

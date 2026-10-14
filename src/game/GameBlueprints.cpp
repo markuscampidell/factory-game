@@ -451,6 +451,16 @@ Rectangle GameScreen::bpListRect() const {
 // ---------------------------------------------------------------------------
 // Drawing (world space): selection rectangle / blueprint ghost
 // ---------------------------------------------------------------------------
+const Builder::BlueprintCheck& GameScreen::heldBlueprintCheck(Vec2i tl, bool replace) {
+    if (bpCheck_.frame != frameNo_ || bpCheck_.tl != tl || bpCheck_.replace != replace) {
+        bpCheck_.check = builder_.checkBlueprint(placing_, tl, replace);
+        bpCheck_.frame = frameNo_;
+        bpCheck_.tl = tl;
+        bpCheck_.replace = replace;
+    }
+    return bpCheck_.check;
+}
+
 void GameScreen::drawBlueprintMode() {
     float t = 1.0f / cam_.zoom;
     if (bpMode_ == BpMode::Selecting || bpMode_ == BpMode::Cutting) {
@@ -500,7 +510,7 @@ void GameScreen::drawBlueprintMode() {
     }
     // ghost of everything at the mouse
     Vec2i tl = Builder::blueprintTopLeft(placing_, mouseTile());
-    Builder::BlueprintCheck c = builder_.checkBlueprint(placing_, tl, shiftDown());
+    const Builder::BlueprintCheck& c = heldBlueprintCheck(tl, shiftDown());
     const Color red{255, 0, 0, 110}, purple{128, 0, 128, 110}, yellow{255, 255, 0, 90}, orange{255, 165, 0, 100};
     const Color dark{20, 20, 20, 170};   // undiscovered area
     const Color outside{150, 0, 0, 170}; // outside the square around the player
@@ -556,7 +566,7 @@ void GameScreen::drawCostInfo() {
     PlaceStatus st = PlaceStatus::Ok;
     bool replace = shiftDown();
     if (bpMode_ == BpMode::Placing) {
-        auto check = builder_.checkBlueprint(placing_, Builder::blueprintTopLeft(placing_, mouseTile()), replace);
+        const auto& check = heldBlueprintCheck(Builder::blueprintTopLeft(placing_, mouseTile()), replace);
         st = check.status;
         cost = check.cost;
     } else if (bpMode_ != BpMode::None) {
