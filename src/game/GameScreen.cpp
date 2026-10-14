@@ -594,11 +594,11 @@ void GameScreen::handleKeys(const Event& e) {
     if (invOpen_ || machinePanel_ >= 0 || storagePanel_ >= 0 || beltPanel_ >= 0 || splitterPanel_ >= 0) return;
     if (e.key == KEY_R && mode_ == BuildMode::Building) { rotateSelected(shiftDown() ? -1 : 1); return; }
     if (e.key == KEY_T && mode_ == BuildMode::Building) { rotateSelected(2); return; }
-    // not building: R / Shift + R / T turn the smelter / assembler under the mouse
+    // not building: R / Shift + R / T turn the belt, splitter, smelter or
+    // assembler under the mouse (keeping what's inside; undo: a step of its own)
     if ((e.key == KEY_R || e.key == KEY_T) && mode_ == BuildMode::None && bpMode_ == BpMode::None && !ctrlDown()) {
         Vector2 m = ui::mouse();
-        TileRef r = interactionAllowed(m) ? objectAt(m) : 0;
-        if (r < 0) builder_.turnMachine(-r - 1, e.key == KEY_T ? 2 : shiftDown() ? -1 : 1);   // undo: a step of its own
+        if (interactionAllowed(m)) builder_.turnAt(screenToTile(m), e.key == KEY_T ? 2 : shiftDown() ? -1 : 1);
     }
 }
 

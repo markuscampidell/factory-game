@@ -116,9 +116,10 @@ public:
     // stands on (as far as they fit). Nothing: none there; NoSpace: none fit.
     TakeResult pickUpUnderPlayer(ItemAmounts* got = nullptr);
 
-    // R on a placed smelter / assembler: turns its output sides by `steps`
-    // quarter turns clockwise (contents stay; recorded for undo).
-    bool turnMachine(int id, int steps);
+    // R when not building: turns the belt, splitter, smelter or assembler at
+    // tile t by `steps` quarter turns clockwise. Everything inside stays
+    // (items, filters, recipe); recorded for undo. False: nothing turnable.
+    bool turnAt(Vec2i t, int steps);
 
     // ---- belts ----
     std::vector<Vec2i> dragTiles(Vec2i start, Vec2i end, Dir placementDir) const;

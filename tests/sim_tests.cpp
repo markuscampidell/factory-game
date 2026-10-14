@@ -342,21 +342,39 @@ static void testOutputSides() {
         CHECK(w.machine(id).outBelts.size() == 1, "right side not an output before turning");
         w.recordChanges = true;
         w.takeRecord();
-        CHECK(b.turnMachine(id, 2) && w.machine(id).dir == Dir::Left, "turn by T failed");
+        CHECK(b.turnAt({1, 2}, 2) && w.machine(id).dir == Dir::Left, "turn by T failed");
         w.ensureTopology();
         CHECK(w.machine(id).outBelts.empty() && total(w.machine(id).contents()) == 4, "turned smelter still outputs right / lost items");
         UndoRecord rec = w.takeRecord();
         CHECK(b.undo(rec) == Builder::UndoResult::Ok, "undo of a turn failed");
         const Machine* back = w.machineAt({0, 0});
         CHECK(back && back->dir == Dir::Right && total(back->contents()) == 4, "undo did not turn it back exactly");
-        CHECK(!b.turnMachine(-1, 1), "turned a machine that doesn't exist");
-        int chest = w.addMachine(makeMachine(MachineType::Storage, {10, 0}));
-        CHECK(!b.turnMachine(chest, 1), "a chest was turned");
+        CHECK(!b.turnAt({50, 50}, 1), "turned an empty tile");
+        w.addMachine(makeMachine(MachineType::Storage, {10, 0}));
+        CHECK(!b.turnAt({10, 0}, 1), "a chest was turned");
+        w.addMachine(makeMachine(MachineType::Miner, {20, 0}, Dir::Right, IRON_ORE));
+        CHECK(!b.turnAt({20, 0}, 1), "a miner was turned");
+        // belts and splitters keep their item (and filters)
+        int bt = w.addBelt({30, 0}, Dir::Right);
+        w.belt(bt).item = COAL;
+        w.belt(bt).filter.enabled = true;
+        int sp = w.addMachine(makeMachine(MachineType::Splitter, {32, 0}, Dir::Right));
+        w.machine(sp).item = IRON_ORE;
+        w.machine(sp).sideFilters[0].enabled = true;
+        w.takeRecord();
+        CHECK(b.turnAt({30, 0}, 1) && w.belt(bt).dir == Dir::Down && w.belt(bt).item == COAL && w.belt(bt).filter.enabled, "belt turn lost something");
+        CHECK(b.turnAt({32, 0}, -1) && w.machine(sp).dir == Dir::Up && w.machine(sp).item == IRON_ORE && w.machine(sp).sideFilters[0].enabled,
+              "splitter turn lost something");
+        auto before = asMap(w.countItems());
+        UndoRecord r2 = w.takeRecord();
+        CHECK(b.undo(r2) == Builder::UndoResult::Ok && w.beltAt({30, 0})->dir == Dir::Right && w.machineAt({32, 0})->dir == Dir::Right,
+              "undo of belt / splitter turns failed");
+        CHECK(asMap(w.countItems()) == before, "undoing turns changed the items");
     }
 }
 
 // Output sides in saves: kept when saving / loading; saves from before output
-// sides (no "direction") turn each smelter towards its old output belts.
+// sides (no "direction") get the default, right + top.
 static void testOutputSidesSave() {
     save::setSavesDir("test_saves");
     World w; Player p; CameraState cam;
@@ -384,12 +402,10 @@ static void testOutputSidesSave() {
     }
     World l; Player lp; CameraState lc;
     CHECK(save::loadGame(l, lp, lc, "output_sides"), "old-style load failed");
-    CHECK(l.machineAt({10, 0})->dir == Dir::Left, "old save: smelter with belts left + bottom turned %s, expected left", dirName(l.machineAt({10, 0})->dir));
-    CHECK(l.machineAt({0, 0})->dir == Dir::Right && l.machineAt({20, 0})->dir == Dir::Right, "old save: machines without belts not right + top");
-    l.ensureTopology();
-    CHECK(l.machineAt({10, 0})->outBelts.size() == 2, "old save: %d of 2 old output belts kept", int(l.machineAt({10, 0})->outBelts.size()));
+    CHECK(l.machineAt({0, 0})->dir == Dir::Right && l.machineAt({10, 0})->dir == Dir::Right && l.machineAt({20, 0})->dir == Dir::Right,
+          "old save: machines not right + top");
     save::remove("output_sides");
-    std::printf("  output sides saved; old saves keep their output belts\n");
+    std::printf("  output sides saved; old saves get right + top\n");
 }
 
 // Ctrl + left click: take a machine's outputs / a chest's contents.

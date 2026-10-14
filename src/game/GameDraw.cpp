@@ -219,17 +219,23 @@ const Texture2D* GameScreen::mapChunkTexture(int cx, int cy) {
 void drawOutputSideArrows(MachineType t, Dir d, Rectangle dest, unsigned char alpha) {
     if (!machineHasOutputSides(t)) return;
     const Color fill{90, 230, 110, alpha}, edge{20, 70, 30, alpha};
-    const float len = CELL_SIZE * 0.32f, wid = CELL_SIZE * 0.36f, inset = CELL_SIZE * 0.12f;
+    const float len = CELL_SIZE * 0.24f, wid = CELL_SIZE * 0.3f, inset = CELL_SIZE * 0.1f;
     float cx = dest.x + dest.width / 2, cy = dest.y + dest.height / 2;
     for (Dir side : {d, rotateCW(d, -1)}) {
         Vector2 v{float(dirVec(side).x), float(dirVec(side).y)}, n{-v.y, v.x};
-        // the middle of that edge, just inside the machine, pointing out
-        float ex = cx + v.x * (dest.width / 2 - inset), ey = cy + v.y * (dest.height / 2 - inset);
-        Vector2 tip{ex, ey}, a{ex - v.x * len + n.x * wid / 2, ey - v.y * len + n.y * wid / 2},
-            b{ex - v.x * len - n.x * wid / 2, ey - v.y * len - n.y * wid / 2};
-        DrawTriangle(tip, a, b, fill);   // (both windings: raylib draws only one)
-        DrawTriangle(tip, b, a, fill);
-        DrawTriangleLines(tip, a, b, edge);
+        // one arrow per tile of that side, just inside the machine, pointing out
+        float ex0 = cx + v.x * (dest.width / 2 - inset), ey0 = cy + v.y * (dest.height / 2 - inset);
+        float along = std::fabs(n.x) * dest.width + std::fabs(n.y) * dest.height;   // length of the side
+        int tiles = std::max(1, int(std::lround(along / CELL_SIZE)));
+        for (int i = 0; i < tiles; ++i) {
+            float o = (float(i) + 0.5f) * CELL_SIZE - along / 2;   // offset of this tile's middle
+            float ex = ex0 + n.x * o, ey = ey0 + n.y * o;
+            Vector2 tip{ex, ey}, a{ex - v.x * len + n.x * wid / 2, ey - v.y * len + n.y * wid / 2},
+                b{ex - v.x * len - n.x * wid / 2, ey - v.y * len - n.y * wid / 2};
+            DrawTriangle(tip, a, b, fill);   // (both windings: raylib draws only one)
+            DrawTriangle(tip, b, a, fill);
+            DrawTriangleLines(tip, a, b, edge);
+        }
     }
 }
 

@@ -357,11 +357,16 @@ Builder::TakeResult Builder::takeContents(Machine& m, ItemAmounts* got) {
     return moved.empty() ? TakeResult::NoSpace : TakeResult::Ok;
 }
 
-bool Builder::turnMachine(int id, int steps) {
-    if (!world.machineAlive(id) || !machineHasOutputSides(world.machine(id).type)) return false;
-    world.noteChangedMachine(id);   // before changing it (undo)
-    Machine& m = world.machine(id);
-    m.dir = rotateCW(m.dir, steps);
+bool Builder::turnAt(Vec2i t, int steps) {
+    if (int id = world.beltIdAt(t); id >= 0) {
+        world.noteChangedBelt(id);       // before changing it (undo)
+        world.belt(id).dir = rotateCW(world.belt(id).dir, steps);   // its item stays on it
+    } else if (int mid = world.machineIdAt(t); mid >= 0 && machineDirMatters(world.machine(mid).type)) {
+        world.noteChangedMachine(mid);
+        world.machine(mid).dir = rotateCW(world.machine(mid).dir, steps);
+    } else {
+        return false;   // nothing there, or a miner / chest
+    }
     world.markTopologyDirty();
     return true;
 }
