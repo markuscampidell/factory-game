@@ -338,6 +338,24 @@ bool Builder::setRecipe(Machine& m, const Recipe* r) {
     return true;
 }
 
+Builder::TakeResult Builder::takeContents(Machine& m, ItemAmounts* got) {
+    if (got) got->clear();
+    std::vector<Inventory*> sources;
+    if (m.isStorage()) sources.push_back(&m.storage);
+    else if (m.isProducing()) for (auto& b : m.outputs) sources.push_back(&b.inv);
+    bool any = false;
+    ItemAmounts moved;
+    for (Inventory* src : sources)
+        for (auto& p : src->contents()) {   // (a copy: src changes while moving)
+            any = true;
+            int n = moveAmount(*src, player.inventory, p.first, p.second);
+            if (n > 0) addAmount(moved, p.first, n);
+        }
+    if (got) *got = moved;
+    if (!any) return TakeResult::Nothing;
+    return moved.empty() ? TakeResult::NoSpace : TakeResult::Ok;
+}
+
 // ---------------------------------------------------------------------------
 // Belts
 // ---------------------------------------------------------------------------
@@ -639,6 +657,7 @@ Builder::UndoResult Builder::undo(const UndoRecord& rec, ItemAmounts* delta, Und
             m->anims.clear();
             m->reservedFor = -1;
             m->outBelts.clear();
+            m->outDirs.clear();
             world.addMachine(std::move(m));
         }
     }

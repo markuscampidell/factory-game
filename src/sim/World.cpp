@@ -146,6 +146,7 @@ void World::clear() {
     machines_.clear();
     freeMachines_.clear();
     topologyDirty_ = true;
+    linesReady_ = false;
     tickCount_ = 0;
     record_ = {};
     terrain::clearCache();
@@ -265,6 +266,7 @@ int World::addBelt(Vec2i pos, Dir dir) {
     b.itemFrom = dir;
     setRef(pos, TileRef(id + 1));
     topologyDirty_ = true;
+    linesReady_ = false;
     if (recordChanges) recordAdded(beltSnap(b));
     return id;
 }
@@ -277,6 +279,7 @@ void World::removeBelt(int id) {
     b = Belt{};
     freeBelts_.push_back(id);
     topologyDirty_ = true;
+    linesReady_ = false;
 }
 
 int World::addMachine(std::unique_ptr<Machine> m) {
@@ -291,6 +294,7 @@ int World::addMachine(std::unique_ptr<Machine> m) {
     if (m->type == MachineType::Miner) m->recipe = &m->minerRecipe;
     machines_[size_t(id)] = std::move(m);
     topologyDirty_ = true;
+    linesReady_ = false;
     if (recordChanges) {
         ObjSnap key;
         key.pos = machines_[size_t(id)]->pos;
@@ -310,6 +314,7 @@ void World::removeMachine(int id) {
     machines_[size_t(id)].reset();
     freeMachines_.push_back(id);
     topologyDirty_ = true;
+    linesReady_ = false;
 }
 
 // ---------------------------------------------------------------------------
@@ -351,18 +356,135 @@ uint8_t World::computeIncoming(Vec2i pos, Dir dir, const Overlay* ov) const {
             const Machine& m = *machines_[size_t(mid)];
             if (m.isSplitter()) {
                 if (travel != opposite(m.dir)) mask |= dirBit(travel);
-            } else {
-                // Machines push straight out of their side, so they only
-                // feed a belt that points directly away from them.
-                if (travel == dir) mask |= dirBit(travel);
+            } else if (travel == dir) {
+                // a belt pointing straight away from any machine
+                mask |= dirBit(travel);
+            } else if (m.isProducing() && !lineFeedsMachine(pos, mid, ov)) {
+                // a belt running past a producing machine's side, joined
+                // like an intersection - unless it is the machine's own
+                // input line
+                mask |= dirBit(travel);
             }
         }
     }
     return mask;
 }
 
+// ---------------------------------------------------------------------------
+// Belt lines
+// ---------------------------------------------------------------------------
+namespace {
+// What is at tile t as far as belt lines care, "what if" overlay included.
+struct LineTile {
+    enum Kind : uint8_t { None, BeltTile, SplitterTile, MachineTile } kind = None;
+    Dir dir = Dir::Right;
+    int mid = -1;   // machine id (splitters and machines)
+};
+
+LineTile lineTileAt(const World& w, Vec2i t, const World::Overlay* ov) {
+    LineTile lt;
+    if (ov) {
+        auto it = ov->belts.find(t);
+        if (it != ov->belts.end()) { lt.kind = LineTile::BeltTile; lt.dir = it->second; return lt; }
+        if (ov->removed.count(t)) return lt;
+        if (ov->hasSplitter && ov->splitterPos == t) { lt.kind = LineTile::SplitterTile; lt.dir = ov->splitterDir; return lt; }
+    }
+    TileRef r = w.refAt(t);
+    if (r > 0) { lt.kind = LineTile::BeltTile; lt.dir = w.belt(r - 1).dir; return lt; }
+    if (r < 0) {
+        int mid = -r - 1;
+        if (ov && ov->ignoreMachine == mid) return lt;
+        const Machine& m = w.machine(mid);
+        lt.kind = m.isSplitter() ? LineTile::SplitterTile : LineTile::MachineTile;
+        lt.dir = m.dir;
+        lt.mid = mid;
+    }
+    return lt;
+}
+
+// Where a belt / splitter at p sends items: onNode(q) for each belt or
+// splitter it hands items to (same rules as the transport graph), onFeed(id)
+// for each machine it puts items into.
+template <class OnNode, class OnFeed>
+void lineForward(const World& w, Vec2i p, const LineTile& lt, const World::Overlay* ov, OnNode onNode, OnFeed onFeed) {
+    auto target = [&](Dir d) {
+        Vec2i q = p + dirVec(d);
+        LineTile qt = lineTileAt(w, q, ov);
+        if (qt.kind == LineTile::BeltTile) { if (qt.dir != opposite(d)) onNode(q); }
+        else if (qt.kind == LineTile::SplitterTile) { if (qt.dir == d) onNode(q); }
+        else if (qt.kind == LineTile::MachineTile) onFeed(qt.mid);
+    };
+    if (lt.kind == LineTile::BeltTile) target(lt.dir);
+    else if (lt.kind == LineTile::SplitterTile)
+        for (int i = 0; i < 3; ++i) target(rotateCW(lt.dir, i - 1));
+}
+
+// Walks the whole line through `start` (downstream and upstream). Calls
+// onFeed(machine id) for every machine the line feeds and onTile(pos, kind,
+// mid) for every belt / splitter of it; stops early when onFeed returns true.
+template <class OnTile, class OnFeed>
+bool walkLine(const World& w, Vec2i start, const World::Overlay* ov, OnTile onTile, OnFeed onFeed,
+              std::unordered_set<Vec2i, Vec2iHash>& seen) {
+    std::vector<Vec2i> todo{start};
+    seen.insert(start);
+    bool stop = false;
+    while (!todo.empty() && !stop) {
+        Vec2i p = todo.back();
+        todo.pop_back();
+        LineTile lt = lineTileAt(w, p, ov);
+        onTile(p, lt);
+        auto visit = [&](Vec2i q) { if (seen.insert(q).second) todo.push_back(q); };
+        // downstream
+        lineForward(w, p, lt, ov, visit, [&](int mid) { if (onFeed(mid)) stop = true; });
+        // upstream: neighbours that send items to p
+        for (int i = 0; i < 4; ++i) {
+            Vec2i q = p + dirVec(Dir(i));
+            if (seen.count(q)) continue;
+            LineTile qt = lineTileAt(w, q, ov);
+            if (qt.kind != LineTile::BeltTile && qt.kind != LineTile::SplitterTile) continue;
+            bool sendsHere = false;
+            lineForward(w, q, qt, ov, [&](Vec2i x) { if (x == p) sendsHere = true; }, [](int) {});
+            if (sendsHere) visit(q);
+        }
+    }
+    return stop;
+}
+} // namespace
+
+void World::rebuildLines() {
+    beltLine_.assign(belts_.size(), -1);
+    lineFeeds_.clear();
+    std::unordered_set<Vec2i, Vec2iHash> seen;
+    int line = 0;
+    auto start = [&](Vec2i p) {
+        if (seen.count(p)) return;
+        walkLine(*this, p, nullptr,
+                 [&](Vec2i q, const LineTile& lt) {
+                     if (lt.kind == LineTile::BeltTile) beltLine_[size_t(refAt(q) - 1)] = line;
+                 },
+                 [&](int mid) { lineFeeds_.insert((uint64_t(uint32_t(line)) << 32) | uint32_t(mid)); return false; },
+                 seen);
+        ++line;
+    };
+    for (auto& b : belts_) if (b.alive) start(b.pos);
+    for (auto& mp : machines_) if (mp && mp->alive && mp->isSplitter()) start(mp->pos);
+    linesReady_ = true;
+}
+
+bool World::lineFeedsMachine(Vec2i beltPos, int machineId, const Overlay* ov) const {
+    if (!ov && linesReady_) {
+        int id = beltIdAt(beltPos);
+        if (id < 0 || size_t(id) >= beltLine_.size() || beltLine_[size_t(id)] < 0) return false;
+        return lineFeeds_.count((uint64_t(uint32_t(beltLine_[size_t(id)])) << 32) | uint32_t(machineId)) != 0;
+    }
+    // previews (or topology out of date): walk the line
+    std::unordered_set<Vec2i, Vec2iHash> seen;
+    return walkLine(*this, beltPos, ov, [](Vec2i, const LineTile&) {}, [&](int mid) { return mid == machineId; }, seen);
+}
+
 void World::ensureTopology() {
     if (!topologyDirty_) return;
+    rebuildLines();
     for (auto& b : belts_) {
         if (!b.alive) continue;
         uint8_t old = b.incomingMask;
@@ -383,13 +505,18 @@ void World::ensureTopology() {
         if (!mp || !mp->alive) continue;
         Machine& m = *mp;
         m.outBelts.clear();
+        m.outDirs.clear();
         if (m.isSplitter()) {
             for (int i = 0; i < 3; ++i) m.sideRef[size_t(i)] = refAt(m.pos + dirVec(m.sideDir(i)));
             m.backRef = refAt(m.pos - dirVec(m.dir));
         } else {
             for (const OutputTile& ot : machineOutputTiles(m)) {
                 TileRef r = refAt(ot.tile);
-                if (r > 0 && belts_[size_t(r - 1)].dir == ot.dir) m.outBelts.push_back(r - 1);
+                // computeIncoming decided which belts this machine feeds
+                if (r > 0 && (belts_[size_t(r - 1)].incomingMask & dirBit(ot.dir))) {
+                    m.outBelts.push_back(r - 1);
+                    m.outDirs.push_back(ot.dir);
+                }
             }
         }
     }

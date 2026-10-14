@@ -786,6 +786,21 @@ void GameScreen::worldClick(const Event& e) {
     if (e.type != EvType::MouseDown || e.button != MB_LEFT || justPlaced_ || shiftDown()) return;
     if (!interactionAllowed(e.pos)) return;
     TileRef r = objectAt(e.pos);
+    if (r < 0 && ctrlDown()) {   // Ctrl + left click: take outputs / chest contents, no panel
+        Machine& m = world_.machine(-r - 1);
+        if (m.isProducing() || m.isStorage()) {
+            RectF rc = m.pixelRect();
+            ItemAmounts got;
+            switch (builder_.takeContents(m, &got)) {
+                case Builder::TakeResult::Ok: showItemDelta(rc.cx(), rc.top(), got); break;
+                case Builder::TakeResult::Nothing:
+                    floatText(rc.cx(), rc.top(), m.isStorage() ? "This chest is empty" : "No outputs to take", Color{255, 110, 110, 255});
+                    break;
+                case Builder::TakeResult::NoSpace: floatText(rc.cx(), rc.top(), "Inventory full", Color{255, 110, 110, 255}); break;
+            }
+            return;
+        }
+    }
     if (r < 0) {
         int id = -r - 1;
         Machine& m = world_.machine(id);

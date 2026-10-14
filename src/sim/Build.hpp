@@ -107,6 +107,12 @@ public:
     // Refuses (returns false) if they don't fit.
     bool setRecipe(Machine& m, const Recipe* r);
 
+    // Ctrl + left click: moves as much as fits into the player's inventory -
+    // a machine's outputs, or everything in a storage box. `got` = what was
+    // moved. Nothing: there was nothing to take; NoSpace: none of it fits.
+    enum class TakeResult { Ok, Nothing, NoSpace };
+    TakeResult takeContents(Machine& m, ItemAmounts* got = nullptr);
+
     // ---- belts ----
     std::vector<Vec2i> dragTiles(Vec2i start, Vec2i end, Dir placementDir) const;
     std::vector<BeltPlan> planBelts(Vec2i start, Vec2i end, Dir placementDir) const;

@@ -688,8 +688,9 @@ void GameScreen::drawFloatTexts(float dt) {
 // While holding a belt: on every side tile of the machines near the mouse a
 // double arrow shows that a belt there can go in or out. Where a belt is
 // already placed, only the matching arrow is left: green "out" (the belt
-// points away - the machine pushes onto it) or blue "in" (the belt points
-// into the machine and feeds it). A belt running along the side gets none.
+// points away, or runs past a producing machine's side - the machine pushes
+// onto it) or blue "in" (the belt points into the machine and feeds
+// it). A belt of the machine's own input line running past gets none.
 // ---------------------------------------------------------------------------
 void GameScreen::drawOutputArrows() {
     const int R = 12;   // tiles around the mouse
@@ -723,9 +724,9 @@ void GameScreen::drawOutputArrows() {
                     arrow(cx - v.x * off, cy - v.y * off, {-v.x, -v.y}, both);
                     continue;
                 }
-                Dir bd = world_.belt(r - 1).dir;
-                if (bd == ot.dir) arrow(cx, cy, v, out);
-                else if (bd == opposite(ot.dir)) arrow(cx, cy, {-v.x, -v.y}, in);
+                const Belt& bt = world_.belt(r - 1);
+                if (bt.incomingMask & dirBit(ot.dir)) arrow(cx, cy, v, out);   // pointing away or running past
+                else if (bt.dir == opposite(ot.dir)) arrow(cx, cy, {-v.x, -v.y}, in);
             }
         }
 }

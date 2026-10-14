@@ -258,7 +258,8 @@ struct Transport {
                         X.reservedFor = mid;
                         return true;
                     }
-                } else if (d == X.dir && producerHasItemFor(M, X)) {
+                } else if (producerHasItemFor(M, X)) {
+                    // (from behind or, for producing machines, from the side)
                     X.reservedFor = mid;
                     return true;
                 }
@@ -429,15 +430,16 @@ struct Transport {
             if (M.isStorage()) any = !M.storage.isEmpty();
             else for (auto& b : M.outputs) if (b.inv.amount(b.item) > 0) { any = true; break; }
             if (!any) continue;
-            for (int bid : M.outBelts) {
-                Belt& X = w.belts_[size_t(bid)];
+            for (size_t k = 0; k < M.outBelts.size(); ++k) {
+                Belt& X = w.belts_[size_t(M.outBelts[k])];
+                Dir travel = M.outDirs[k];
                 if (X.item != NO_ITEM) continue;
                 if (X.reservedFor >= 0 && X.reservedFor != mid) continue;
                 bool wasReserved = X.reservedFor == mid;
                 ItemId it = producerTakeItemFor(M, X);
                 if (it == NO_ITEM) continue;
-                giveToBelt(X, it, X.dir);
-                if (wasReserved) X.rr = uint8_t((int(X.dir) + 1) % 4);
+                giveToBelt(X, it, travel);
+                if (wasReserved) X.rr = uint8_t((int(travel) + 1) % 4);
             }
         }
     }

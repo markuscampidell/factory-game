@@ -206,6 +206,120 @@ static void testProductionChain() {
 }
 
 // ---------------------------------------------------------------------------
+// Side outputs: a producing machine also pushes onto belts running past its
+// sides (joined like an intersection), but never onto its own input line.
+// Layout like a typical smelter row: one ore line between two rows of
+// smelters, fed by splitters; output belts along the outer sides.
+//
+//   y=-4   <<<<<<  (to sink A)        top smelters  x 0..2 / 3..5, y -3..-1
+//   y= 0   >>>>>>>S>>S                 bottom        x 0..2 / 3..5, y  1.. 3
+//   y= 4   <<<<<<  (to sink B)
+static void testSideOutputs() {
+    World w;
+    w.seed = 1;
+    makeSourceStorage(w, {-9, 0}, IRON_ORE, 1800);
+    line(w, {-7, 0}, Dir::Right, 8);                                   // -7..0
+    w.addMachine(makeMachine(MachineType::Splitter, {1, 0}, Dir::Right));
+    line(w, {2, 0}, Dir::Right, 2);                                    // 2..3
+    w.addMachine(makeMachine(MachineType::Splitter, {4, 0}, Dir::Right));
+    int sm[4] = {w.addMachine(makeMachine(MachineType::Smelter, {0, -3})), w.addMachine(makeMachine(MachineType::Smelter, {3, -3})),
+                 w.addMachine(makeMachine(MachineType::Smelter, {0, 1})), w.addMachine(makeMachine(MachineType::Smelter, {3, 1}))};
+    line(w, {5, -4}, Dir::Left, 6);                                    // 5..0 going left
+    int sinkA = makeSinkStorage(w, {-2, -5});                          // -2..-1, -5..-4
+    line(w, {5, 4}, Dir::Left, 6);
+    int sinkB = makeSinkStorage(w, {-2, 4});                           // -2..-1, 4..5
+    w.ensureTopology();
+
+    // the ore line is the smelters' input: no side connections on it
+    bool cleanInput = true;
+    for (int x = -7; x <= 3; ++x) {
+        const Belt* b = w.beltAt({x, 0});
+        if (b && (b->incomingMask & (dirBit(Dir::Up) | dirBit(Dir::Down)))) cleanInput = false;
+    }
+    CHECK(cleanInput, "input line got joined to the smelters");
+    // the outer belts are joined to the smelters (intersection / curve sprite)
+    CHECK(w.beltAt({1, -4})->incomingMask == (dirBit(Dir::Left) | dirBit(Dir::Up)), "top output belt mask %d", w.beltAt({1, -4})->incomingMask);
+    CHECK(w.beltAt({5, 4})->incomingMask == dirBit(Dir::Down), "first bottom output belt mask %d", w.beltAt({5, 4})->incomingMask);
+    for (int id : sm) CHECK(w.machine(id).outBelts.size() == 3, "smelter has %d output belts, expected 3", int(w.machine(id).outBelts.size()));
+
+    bool ingotOnInput = false;
+    for (int t = 0; t < 60 * 60; ++t) {
+        w.tick();
+        for (int x = -7; x <= 3; ++x) {
+            const Belt* b = w.beltAt({x, 0});
+            if (b && b->item == IRON_INGOT) ingotOnInput = true;
+        }
+    }
+    CHECK(!ingotOnInput, "an ingot ended up on the ore line");
+    int a = w.machine(sinkA).storage.amount(IRON_INGOT), b = w.machine(sinkB).storage.amount(IRON_INGOT);
+    CHECK(a > 20 && b > 20, "side outputs delivered %d + %d ingots", a, b);
+    auto m = asMap(w.countItems());
+    CHECK(m[IRON_ORE] + 3 * m[IRON_INGOT] == 1800, "ore/ingot balance broken: %d ore + 3*%d ingots", m[IRON_ORE], m[IRON_INGOT]);
+    std::printf("  side outputs: %d + %d ingots in 60 s\n", a, b);
+
+    // A belt that runs past a smelter and then turns into it is its input.
+    World v;
+    v.seed = 1;
+    int s = v.addMachine(makeMachine(MachineType::Smelter, {20, 0}));  // 20..22, 0..2
+    line(v, {19, -1}, Dir::Right, 4);                                  // 19..22 above it
+    v.addBelt({23, -1}, Dir::Down);
+    v.addBelt({23, 0}, Dir::Left);                                     // into the smelter
+    v.ensureTopology();
+    CHECK(v.machine(s).outBelts.empty(), "smelter outputs onto the line that feeds it");
+    // with the turn missing, the same belts become outputs
+    v.removeBelt(v.beltIdAt({23, 0}));
+    v.ensureTopology();
+    CHECK(v.machine(s).outBelts.size() == 3, "%d side outputs once the line no longer feeds it", int(v.machine(s).outBelts.size()));
+    // previews (overlay) agree with the cached lines
+    World::Overlay ov;
+    ov.belts[{23, 0}] = Dir::Left;
+    CHECK(v.computeIncoming({21, -1}, Dir::Right, &ov) == dirBit(Dir::Right), "preview still joins the input line");
+    // storage boxes don't dump onto belts passing by
+    World u;
+    u.seed = 1;
+    makeSourceStorage(u, {0, 0}, IRON_INGOT, 10);
+    line(u, {-1, -1}, Dir::Right, 4);
+    u.ensureTopology();
+    CHECK(u.beltAt({0, -1})->incomingMask == dirBit(Dir::Right), "storage joined a passing belt");
+}
+
+// Ctrl + left click: take a machine's outputs / a chest's contents.
+static void testTakeContents() {
+    World w;
+    w.seed = 1;
+    Player p;
+    Builder b(w, p);
+    // smelter: outputs are taken, inputs stay
+    int sid = w.addMachine(makeMachine(MachineType::Smelter, {0, 0}));
+    Machine& sm = w.machine(sid);
+    sm.inputs[0].inv.tryAdd(sm.inputs[0].item, 5);
+    sm.outputs[0].inv.tryAdd(sm.outputs[0].item, 7);
+    ItemAmounts got;
+    CHECK(b.takeContents(sm, &got) == Builder::TakeResult::Ok, "smelter take failed");
+    CHECK(total(got) == 7 && p.inventory.amount(sm.outputs[0].item) == 7, "took %d outputs, expected 7", total(got));
+    CHECK(sm.inputs[0].inv.amount(sm.inputs[0].item) == 5, "inputs were taken too");
+    CHECK(b.takeContents(sm, &got) == Builder::TakeResult::Nothing && got.empty(), "empty outputs not reported");
+    // chest: everything, as far as it fits
+    int cid = makeSourceStorage(w, {10, 0}, IRON_INGOT, 250);
+    w.machine(cid).storage.tryAdd(COAL, 30);
+    CHECK(b.takeContents(w.machine(cid), &got) == Builder::TakeResult::Ok, "chest take failed");
+    auto g = asMap(got);
+    CHECK(g[IRON_INGOT] == 250 && g[COAL] == 30 && w.machine(cid).storage.isEmpty(), "chest gave %d iron, %d coal", g[IRON_INGOT], g[COAL]);
+    // full inventory: what fits moves, the rest stays; nothing moved = NoSpace
+    p.inventory.clear();
+    int cap = 0;
+    while (p.inventory.tryAdd(COPPER_INGOT, 100)) cap += 100;
+    p.inventory.tryRemove(COPPER_INGOT, 40);
+    makeSourceStorage(w, {20, 0}, COPPER_INGOT, 100);
+    int c2 = w.machineIdAt({20, 0});
+    CHECK(b.takeContents(w.machine(c2), &got) == Builder::TakeResult::Ok && total(got) == 40, "partial take moved %d, expected 40", total(got));
+    CHECK(w.machine(c2).storage.amount(COPPER_INGOT) == 60, "chest kept %d, expected 60", w.machine(c2).storage.amount(COPPER_INGOT));
+    CHECK(b.takeContents(w.machine(c2), &got) == Builder::TakeResult::NoSpace, "full inventory not reported");
+    CHECK(p.inventory.amount(COPPER_INGOT) + w.machine(c2).storage.amount(COPPER_INGOT) == cap + 60, "copper lost or created");
+    std::printf("  take contents: outputs only from machines, everything from chests, as much as fits\n");
+}
+
+// ---------------------------------------------------------------------------
 // Value of everything = items held + build cost of everything built.
 static std::map<ItemId, int> worldValue(World& w, Player& p) {
     std::map<ItemId, int> v = asMap(w.countItems());
@@ -727,6 +841,8 @@ int main(int argc, char** argv) {
     testFullLoopRotates();
     std::printf("Machines\n");
     testProductionChain();
+    testSideOutputs();
+    testTakeContents();
     testHandCraftingAndRecipeSwitch();
     std::printf("Item conservation\n");
     testConservationFuzz();
