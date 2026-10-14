@@ -216,8 +216,10 @@ const Texture2D* GameScreen::mapChunkTexture(int cx, int cy) {
     return &it->second.tex;
 }
 
+bool hasSideArrows(MachineType t) { return machineHasOutputSides(t) || t == MachineType::Miner; }
+
 void drawOutputSideArrows(MachineType t, Dir d, Rectangle dest, unsigned char alpha) {
-    if (!machineHasOutputSides(t)) return;
+    if (!hasSideArrows(t)) return;   // (a miner outputs on every side: all green)
     const Color outFill{90, 230, 110, alpha}, outEdge{20, 70, 30, alpha};
     const Color inFill{235, 80, 70, alpha}, inEdge{80, 20, 15, alpha};
     const float len = CELL_SIZE * 0.24f, wid = CELL_SIZE * 0.3f, inset = CELL_SIZE * 0.1f;
@@ -395,7 +397,7 @@ void GameScreen::drawMachines() {
             Rectangle dest{p.x, p.y, float(m.w * CELL_SIZE), float(m.h * CELL_SIZE)};
             assets::drawMachine(m.type, m.dir, dest);
             // output sides: while building, and on the machine under the mouse
-            if (machineHasOutputSides(m.type) && (buildingNow || hovered_ == -(id + 1))) drawOutputSideArrows(m.type, m.dir, dest);
+            if (hasSideArrows(m.type) && (buildingNow || hovered_ == -(id + 1))) drawOutputSideArrows(m.type, m.dir, dest);
             float cx = dest.x + dest.width / 2, cy = dest.y + dest.height / 2;
 
             if (m.isProducing() && m.recipe && !m.recipe->outputs.empty()) {
