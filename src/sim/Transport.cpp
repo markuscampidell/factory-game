@@ -185,9 +185,12 @@ struct Transport {
         if (m.anims.size() < 64) m.anims.push_back(a);
     }
 
-    // Belt/splitter -> machine (smelter, assembler, storage).
+    // Belt/splitter -> machine (smelter, assembler, storage). `d` = the
+    // direction the item travels; smelters / assemblers refuse items coming
+    // in through an output side (the item waits).
     bool insertIntoMachine(Machine& m, ItemId item, Vec2i from, Dir d) {
         if (m.isSplitter()) return false;
+        if (machineHasOutputSides(m.type) && isOutputSide(m.type, m.dir, opposite(d))) return false;
         bool ok = false;
         if (m.isStorage()) ok = m.storage.tryAdd(item, 1);
         else if (MachineBuffer* buf = m.inputBuffer(item)) ok = buf->inv.tryAdd(item, 1);

@@ -146,7 +146,7 @@ static void testSplitterIntoMachine() {
     line(w, {6, 0}, Dir::Right, 6);
     int sink = makeSinkStorage(w, {12, 0});
     int top = w.addMachine(makeMachine(MachineType::Smelter, {4, -3}));     // left side (up)
-    int bottom = w.addMachine(makeMachine(MachineType::Smelter, {4, 1}));   // right side (down)
+    int bottom = w.addMachine(makeMachine(MachineType::Smelter, {4, 1}, Dir::Left));   // right side (down); turned so its top is an input side
     auto held = [&](int id) { int n = 0; for (auto& c : w.machine(id).contents()) n += c.second; return n; };
     for (int t = 0; t < 600; ++t) w.tick();
     int toTop = held(top), toBottom = held(bottom);
@@ -252,15 +252,21 @@ static void testOutputSides() {
         CHECK(outSides(w, id) == dirBit(Dir::Up), "default smelter sides %d", outSides(w, id));
         CHECK(w.beltAt({-1, 1})->incomingMask == 0, "belt pointing away from an input side got joined");
     }
-    // inputs from every side, even an output side
+    // inputs only through the input sides: a belt / splitter pointing into an output side can't deliver
     {
         World w; w.seed = 1;
         int id = w.addMachine(makeMachine(MachineType::Smelter, {0, 0}));
-        int b = w.addBelt({1, -1}, Dir::Down);   // top (an output side), pointing in
-        w.belt(b).item = IRON_ORE;
-        w.belt(b).progress = BELT_TICKS_PER_TILE;
+        int top = w.addBelt({1, -1}, Dir::Down);    // top (an output side), pointing in
+        int left = w.addBelt({-1, 1}, Dir::Right);  // left (an input side), pointing in
+        for (int b : {top, left}) { w.belt(b).item = IRON_ORE; w.belt(b).progress = BELT_TICKS_PER_TILE; }
+        w.addMachine(makeMachine(MachineType::Splitter, {3, 1}, Dir::Up));   // its left side points into the smelter's right (output) side
+        w.machine(w.machineIdAt({3, 1})).item = IRON_ORE;
+        w.machine(w.machineIdAt({3, 1})).progress = BELT_TICKS_PER_TILE;
         for (int t = 0; t < 5; ++t) w.tick();
-        CHECK(w.machine(id).inputBuffer(IRON_ORE)->inv.amount(IRON_ORE) == 1, "input from an output side refused");
+        CHECK(w.machine(id).inputBuffer(IRON_ORE)->inv.amount(IRON_ORE) == 1, "smelter got %d ore, expected 1 (only from the left)",
+              w.machine(id).inputBuffer(IRON_ORE)->inv.amount(IRON_ORE));
+        CHECK(w.belt(top).item == IRON_ORE && w.machineAt({3, 1})->item == IRON_ORE, "an item went in through an output side");
+        CHECK(total(w.countItems()) == 3, "items lost");
     }
     // a miner pushes onto every side
     {

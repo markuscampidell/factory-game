@@ -730,7 +730,7 @@ void GameScreen::drawOutputArrows() {
                 const float off = CELL_SIZE * 0.2f;
                 if (r == 0) {   // free: what a belt here could do
                     bool canOut = m.isStorage() || isOutputSide(m.type, m.dir, ot.dir);
-                    bool canIn = m.type != MachineType::Miner;
+                    bool canIn = m.type != MachineType::Miner && !(machineHasOutputSides(m.type) && isOutputSide(m.type, m.dir, ot.dir));
                     if (canOut && canIn) {
                         arrow(cx + v.x * off, cy + v.y * off, v, both);
                         arrow(cx - v.x * off, cy - v.y * off, {-v.x, -v.y}, both);
@@ -743,7 +743,8 @@ void GameScreen::drawOutputArrows() {
                 }
                 const Belt& bt = world_.belt(r - 1);
                 if (bt.incomingMask & dirBit(ot.dir)) arrow(cx, cy, v, out);   // pointing away or running past
-                else if (bt.dir == opposite(ot.dir)) arrow(cx, cy, {-v.x, -v.y}, in);
+                else if (bt.dir == opposite(ot.dir) && !(machineHasOutputSides(m.type) && isOutputSide(m.type, m.dir, ot.dir)))
+                    arrow(cx, cy, {-v.x, -v.y}, in);   // (pointing into an output side: blocked, no arrow)
             }
         }
 }
