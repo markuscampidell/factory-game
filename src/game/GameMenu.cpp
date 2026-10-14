@@ -38,7 +38,7 @@ const std::vector<ControlSection>& controlSections() {
           {"Middle Click", "Pick up a machine/belt/splitter (with its direction) to build more of it. Recipe and filters stay default; not saved, Ctrl + V ignores it"},
           {"R", "Rotate the selected building clockwise (belts, splitters, smelters / assemblers - their output sides -, and a held copy / blueprint; a miner switches between standing and lying)"},
           {"R / Shift + R / T (pointing at something placed)", "Not building: turn the belt, splitter, smelter or assembler under the mouse - everything inside stays (items, filters, recipe). Ctrl + Z undoes it"},
-          {"Output sides", "Smelters and assemblers put their products only onto belts at their two green arrows (right + top until you turn them) - pointing away or running past. They take inputs from every side. Miners output on every side, chests only onto belts pointing straight away. The arrows show while building and on the machine under the mouse"},
+          {"Output sides", "Smelters and assemblers put their products only onto belts at their two green arrows (right + top until you turn them) - pointing away or running past. Red arrows mark the input sides (left + bottom), but they take inputs from every side. Miners output on every side, chests only onto belts pointing straight away. The arrows show while building and on the machine under the mouse"},
           {"Shift + R", "Rotate the selected building counter-clockwise"},
           {"T", "Rotate the selected building 180 degrees"},
           {"G", "While holding a copy / blueprint: mirror it left <-> right"},

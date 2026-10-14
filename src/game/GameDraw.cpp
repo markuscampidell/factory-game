@@ -218,23 +218,30 @@ const Texture2D* GameScreen::mapChunkTexture(int cx, int cy) {
 
 void drawOutputSideArrows(MachineType t, Dir d, Rectangle dest, unsigned char alpha) {
     if (!machineHasOutputSides(t)) return;
-    const Color fill{90, 230, 110, alpha}, edge{20, 70, 30, alpha};
+    const Color outFill{90, 230, 110, alpha}, outEdge{20, 70, 30, alpha};
+    const Color inFill{235, 80, 70, alpha}, inEdge{80, 20, 15, alpha};
     const float len = CELL_SIZE * 0.24f, wid = CELL_SIZE * 0.3f, inset = CELL_SIZE * 0.1f;
     float cx = dest.x + dest.width / 2, cy = dest.y + dest.height / 2;
-    for (Dir side : {d, rotateCW(d, -1)}) {
+    for (int k = 0; k < 4; ++k) {
+        Dir side = Dir(k);
+        bool out = isOutputSide(t, d, side);
         Vector2 v{float(dirVec(side).x), float(dirVec(side).y)}, n{-v.y, v.x};
-        // one arrow per tile of that side, just inside the machine, pointing out
+        // just inside the machine at the middle tile of that side (the two
+        // middle tiles if the side is an even number of tiles long);
+        // green pointing out on output sides, red pointing in on input sides
         float ex0 = cx + v.x * (dest.width / 2 - inset), ey0 = cy + v.y * (dest.height / 2 - inset);
         float along = std::fabs(n.x) * dest.width + std::fabs(n.y) * dest.height;   // length of the side
         int tiles = std::max(1, int(std::lround(along / CELL_SIZE)));
-        for (int i = 0; i < tiles; ++i) {
+        for (int i = (tiles - 1) / 2; i <= tiles / 2; ++i) {
             float o = (float(i) + 0.5f) * CELL_SIZE - along / 2;   // offset of this tile's middle
             float ex = ex0 + n.x * o, ey = ey0 + n.y * o;
-            Vector2 tip{ex, ey}, a{ex - v.x * len + n.x * wid / 2, ey - v.y * len + n.y * wid / 2},
-                b{ex - v.x * len - n.x * wid / 2, ey - v.y * len - n.y * wid / 2};
-            DrawTriangle(tip, a, b, fill);   // (both windings: raylib draws only one)
-            DrawTriangle(tip, b, a, fill);
-            DrawTriangleLines(tip, a, b, edge);
+            // tip on the edge (out) or a triangle-length further in (in)
+            Vector2 tip = out ? Vector2{ex, ey} : Vector2{ex - v.x * len, ey - v.y * len};
+            Vector2 base = out ? Vector2{ex - v.x * len, ey - v.y * len} : Vector2{ex, ey};
+            Vector2 a{base.x + n.x * wid / 2, base.y + n.y * wid / 2}, b{base.x - n.x * wid / 2, base.y - n.y * wid / 2};
+            DrawTriangle(tip, a, b, out ? outFill : inFill);   // (both windings: raylib draws only one)
+            DrawTriangle(tip, b, a, out ? outFill : inFill);
+            DrawTriangleLines(tip, a, b, out ? outEdge : inEdge);
         }
     }
 }
