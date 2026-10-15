@@ -518,6 +518,21 @@ bool takeSaveError(std::string& error) {
     return true;
 }
 
+int removeBuiltOnWater(World& w) {
+    int removed = 0;
+    for (int id = 0; id < int(w.belts().size()); ++id)
+        if (w.belt(id).alive && w.isWater(w.belt(id).pos)) { w.removeBelt(id); ++removed; }
+    for (int id = 0; id < int(w.machineSlots()); ++id) {
+        if (!w.machineAlive(id)) continue;
+        const Machine& m = w.machine(id);
+        bool wet = false;
+        for (int dy = 0; dy < m.h && !wet; ++dy)
+            for (int dx = 0; dx < m.w && !wet; ++dx) wet = w.isWater({m.pos.x + dx, m.pos.y + dy});
+        if (wet) { w.removeMachine(id); ++removed; }
+    }
+    return removed;
+}
+
 bool loadGame(World& w, Player& p, CameraState& cam, const std::string& name, std::string* error) {
     waitForSaves();
     std::ifstream f(pathFor(name));
@@ -588,6 +603,10 @@ bool loadGame(World& w, Player& p, CameraState& cam, const std::string& name, st
             }
             w.addMachine(std::move(m));
         }
+
+        // Saves from before lakes and seas: whatever now stands on water is
+        // gone - deleted with its contents, nothing is refunded.
+        removeBuiltOnWater(w);
 
         // Anything that had nowhere to go goes into the player's inventory
         // (or, if that's full, a storage box placed next to the player), so

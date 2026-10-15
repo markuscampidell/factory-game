@@ -9,7 +9,6 @@
 namespace {
 const Color GROUND{110, 88, 60, 255};
 const Color WATER{52, 110, 170, 255};
-const Color WATER_EDGE{110, 165, 210, 255};   // lighter line where water meets land
 // 30% opacity so the grid doesn't overpower the world
 const Color GRID_COLOR{204, 204, 204, 77};
 const Color CHUNK_COLOR{255, 140, 0, 77};
@@ -130,17 +129,10 @@ void GameScreen::drawTerrain() {
     int l, t, r, b;
     cam_.visibleTiles(l, t, r, b);
     float icon = CELL_SIZE * 0.7f;
-    const float edge = 3;
     for (int y = t; y < b; ++y)
         for (int x = l; x < r; ++x) {
-            if (world_.isWater({x, y})) {
-                float px = float(x * CELL_SIZE), py = float(y * CELL_SIZE);
-                DrawRectangleRec({px, py, CELL_SIZE, CELL_SIZE}, WATER);
-                // shoreline on the sides that touch land
-                if (!world_.isWater({x, y - 1})) DrawRectangleRec({px, py, CELL_SIZE, edge}, WATER_EDGE);
-                if (!world_.isWater({x, y + 1})) DrawRectangleRec({px, py + CELL_SIZE - edge, CELL_SIZE, edge}, WATER_EDGE);
-                if (!world_.isWater({x - 1, y})) DrawRectangleRec({px, py, edge, CELL_SIZE}, WATER_EDGE);
-                if (!world_.isWater({x + 1, y})) DrawRectangleRec({px + CELL_SIZE - edge, py, edge, CELL_SIZE}, WATER_EDGE);
+            if (world_.isWater({x, y})) {   // one plain colour
+                DrawRectangleRec({float(x * CELL_SIZE), float(y * CELL_SIZE), CELL_SIZE, CELL_SIZE}, WATER);
                 continue;
             }
             ItemId ore = world_.oreAt({x, y});

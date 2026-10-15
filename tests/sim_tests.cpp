@@ -727,8 +727,8 @@ static void testWater() {
     p.inventory.tryAdd(IRON_INGOT, 200);
     p.inventory.tryAdd(COPPER_INGOT, 100);
     Builder b(w, p);
-    // pump: top-left at (shore.x - 1, shore.y) covers shore and its left neighbour, touching the water on the right
-    auto pumpAt = [&](Vec2i tl) { return b.checkMachine(MachineType::WaterPump, tl + Vec2i{1, 1}, Dir::Right, false); };   // mouse -> top-left - (1,1)
+    // pump (2 x 1): top-left at (shore.x - 1, shore.y) covers shore and its left neighbour, touching the water on the right
+    auto pumpAt = [&](Vec2i tl) { return b.checkMachine(MachineType::WaterPump, tl + Vec2i{1, 0}, Dir::Right, false); };   // mouse -> top-left - (1,0)
     CHECK(pumpAt({shore.x - 1, shore.y}) == PlaceStatus::Ok, "pump next to water: %d", int(pumpAt({shore.x - 1, shore.y})));
     CHECK(pumpAt({shore.x, shore.y}) == PlaceStatus::OnWater, "pump on water: %d", int(pumpAt({shore.x, shore.y})));
     // a pump far inland needs water
@@ -737,8 +737,31 @@ static void testWater() {
     CHECK(!b.placeBelts(water, water, Dir::Right, false), "belt on water placed");
     CHECK(b.placeBelts(shore, shore, Dir::Right, false), "belt on the shore refused");
     w.removeBelt(w.beltIdAt(shore));   // (the pump goes there next)
-    int pump = b.placeMachine(MachineType::WaterPump, {shore.x, shore.y + 1}, Dir::Right, false, nullptr);   // top-left (shore.x - 1, shore.y)
-    CHECK(pump >= 0 && w.machine(pump).pos == Vec2i(shore.x - 1, shore.y) && w.machine(pump).w == 2, "pump next to water not placed");
+    int pump = b.placeMachine(MachineType::WaterPump, shore, Dir::Right, false, nullptr);   // top-left (shore.x - 1, shore.y)
+    CHECK(pump >= 0 && w.machine(pump).pos == Vec2i(shore.x - 1, shore.y) && w.machine(pump).w == 2 && w.machine(pump).h == 1,
+          "2 x 1 pump next to water not placed");
+    // old saves: whatever stands on water is deleted on load, contents included, no refund
+    {
+        save::setSavesDir("test_saves");
+        World o; o.seed = seed;
+        Player op; CameraState oc;
+        int wet = o.addBelt(water, Dir::Right);
+        o.belt(wet).item = COAL;
+        int dryBelt = o.addBelt(shore, Dir::Right);
+        auto sm = makeMachine(MachineType::Smelter, water + Vec2i{1, -1});    // on water, not overlapping the belts
+        sm->inputs[0].inv.tryAdd(sm->inputs[0].item, 5);
+        o.addMachine(std::move(sm));
+        (void)dryBelt;
+        CHECK(save::saveGame(o, op, oc, "water_old"), "save failed");
+        World l; Player lp; CameraState lc;
+        CHECK(save::loadGame(l, lp, lc, "water_old"), "load failed");
+        int belts = 0, machines = 0;
+        for (auto& bb : l.belts()) belts += bb.alive;
+        for (size_t i = 0; i < l.machineSlots(); ++i) machines += l.machineAlive(int(i));
+        CHECK(belts == 1 && l.beltAt(shore) && machines == 0, "after loading: %d belts, %d machines (expected 1 dry belt, 0 machines)", belts, machines);
+        CHECK(lp.inventory.contents().empty() && total(l.countItems()) == 0, "things on water were refunded");
+        save::remove("water_old");
+    }
     // walking: 30% slower in water
     Player a, c;
     a.setCenter(float(water.x * CELL_SIZE + CELL_SIZE / 2), float(water.y * CELL_SIZE + CELL_SIZE / 2));

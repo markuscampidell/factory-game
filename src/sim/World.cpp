@@ -15,7 +15,7 @@ const MachineSpec& machineSpec(MachineType t) {
         {"storage", "Storage", 2, 2, "assets/sprites/machines/storage.png", {{iron, 10}}},
         {"miner", "Miner", 2, 3, "assets/sprites/machines/miner.png", {{iron, 5}}},
         // must stand right next to water; does nothing yet (water will go into pipes)
-        {"water_pump", "Water Pump", 2, 2, "assets/sprites/machines/water_pump.png", {{iron, 5}, {copper, 3}}},
+        {"water_pump", "Water Pump", 2, 1, "assets/sprites/machines/water_pump.png", {{iron, 5}, {copper, 3}}},
     };
     return specs[int(t)];
 }

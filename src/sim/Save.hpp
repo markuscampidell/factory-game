@@ -53,6 +53,9 @@ void saveGameInBackground(const World& w, const Player& p, const CameraState& ca
 void waitForSaves();
 bool takeSaveError(std::string& error);
 bool loadGame(World& w, Player& p, CameraState& cam, const std::string& name, std::string* error = nullptr);
+// Loading removes everything that stands on water (saves from before lakes
+// and seas) - with its contents, no refund. Returns how many things.
+int removeBuiltOnWater(World& w);
 // Fresh world + empty inventory; also writes the save immediately.
 void newGame(World& w, Player& p, CameraState& cam, const std::string& name);
 
