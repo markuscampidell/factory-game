@@ -633,7 +633,9 @@ void GameScreen::drawCostInfo() {
     } else if (selected_ == Buildable::Belt) {
         // one belt, or the whole line while dragging
         Vec2i mt = mouseTile();
-        st = builder_.beltAffordability(builder_.planBelts(placingBelt_ ? beltStart_ : mt, mt, beltDir_), &cost);
+        auto plan = builder_.planBelts(placingBelt_ ? beltStart_ : mt, mt, beltDir_);
+        st = builder_.beltAffordability(plan, &cost);
+        if (builder_.anyBeltTileOnWater(plan)) st = PlaceStatus::OnWater;   // same hint + colour as machines
     } else {
         st = builder_.checkMachine(toMachine(selected_), mouseTile(), Dir(splitterRot_), replace, &cost);
     }

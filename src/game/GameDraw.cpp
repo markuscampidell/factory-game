@@ -579,6 +579,7 @@ void GameScreen::drawGhostBelts() {
     Vec2i mt = mouseTile();
     bool allow = shiftDown();
     const Color red{255, 0, 0, 120}, orange{255, 165, 0, 120}, yellow{255, 255, 0, 120};
+    const Color waterTint{40, 110, 230, 110};   // on water (same as machines)
 
     std::vector<BeltPlan> plan;
     std::vector<Color> colors;
@@ -586,7 +587,8 @@ void GameScreen::drawGhostBelts() {
     if (!placingBelt_) {
         plan = builder_.planBelts(mt, mt, beltDir_);
         bool blocked = builder_.isDragTileBlocked(plan[0], mt, true, allow);
-        if (blocked) { colors.push_back(red); hasColor.push_back(true); }
+        if (builder_.beltTileOnWater(mt)) { colors.push_back(waterTint); hasColor.push_back(true); }
+        else if (blocked) { colors.push_back(red); hasColor.push_back(true); }
         else {
             PlaceStatus st = builder_.beltAffordability(plan);
             colors.push_back(st == PlaceStatus::NoSpace ? orange : yellow);
@@ -595,8 +597,15 @@ void GameScreen::drawGhostBelts() {
     } else {
         plan = builder_.planBelts(beltStart_, mt, beltDir_);
         if (builder_.anyDragTileBlocked(plan, beltStart_, allow)) {
-            colors.assign(plan.size(), red);
-            hasColor.assign(plan.size(), true);
+            // water tiles blue; the rest red, unless water is the only problem
+            bool othersOk = builder_.othersFreeOrMatching(plan, beltStart_), otherReason = false;
+            for (auto& p : plan)
+                otherReason |= !builder_.beltTileOnWater(p.pos) && builder_.isDragTileBlocked(p, beltStart_, othersOk, allow);
+            for (auto& p : plan) {
+                bool wet = builder_.beltTileOnWater(p.pos);
+                colors.push_back(wet ? waterTint : red);
+                hasColor.push_back(wet || otherReason);
+            }
         } else {
             auto ok = builder_.runningAffordability(plan);
             for (bool o : ok) { colors.push_back(yellow); hasColor.push_back(!o); }

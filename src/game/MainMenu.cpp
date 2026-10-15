@@ -83,7 +83,14 @@ MenuAction MainMenu::handleRoot(const Event& e) {
 void MainMenu::openNewGame(const std::string& initial) {
     screen_ = Screen::NewGame;
     float w = ui::screenW(), h = ui::screenH();
-    nameInput_ = TextInput(centeredRect(w / 2, h / 2 - 20, 320, 44), initial);
+    // a free name is filled in, so Start works without typing (phones)
+    std::string name = initial;
+    if (name.empty()) {
+        int n = 1;
+        while (save::exists("Game " + std::to_string(n))) ++n;
+        name = "Game " + std::to_string(n);
+    }
+    nameInput_ = TextInput(centeredRect(w / 2, h / 2 - 20, 320, 44), name);
 }
 
 MenuAction MainMenu::handleNewGame(const Event& e) {
@@ -104,6 +111,7 @@ MenuAction MainMenu::handleNewGame(const Event& e) {
         if (inRect(startRect_, e.pos)) {
             std::string name = nameInput_ ? nameInput_->text : "";
             if (name.find_first_not_of(' ') != std::string::npos) return submitNewGame(name);
+            message_ = std::make_unique<MessageDialog>("Please enter a name for the save.");
         } else if (inRect(backRect_, e.pos) || inRect(panelCloseRect(newGamePanel_), e.pos)) {
             nameInput_.reset();
             screen_ = Screen::Root;

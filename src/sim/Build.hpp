@@ -158,6 +158,9 @@ public:
     std::vector<Vec2i> dragTiles(Vec2i start, Vec2i end, Dir placementDir) const;
     std::vector<BeltPlan> planBelts(Vec2i start, Vec2i end, Dir placementDir) const;
     bool othersFreeOrMatching(const std::vector<BeltPlan>& plan, Vec2i start) const;
+    // A new belt would go on water there (a belt already there may be turned in place).
+    bool beltTileOnWater(Vec2i t) const { return world.beltIdAt(t) < 0 && const_cast<World&>(world).isWater(t); }
+    bool anyBeltTileOnWater(const std::vector<BeltPlan>& plan) const;
     bool isDragTileBlocked(const BeltPlan& p, Vec2i start, bool othersOk, bool allowReplace) const;
     bool anyDragTileBlocked(const std::vector<BeltPlan>& plan, Vec2i start, bool allowReplace) const;
     PlaceStatus beltAffordability(const std::vector<BeltPlan>& plan, ItemAmounts* cost = nullptr) const;

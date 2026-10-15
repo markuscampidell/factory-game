@@ -579,11 +579,17 @@ bool Builder::othersFreeOrMatching(const std::vector<BeltPlan>& plan, Vec2i star
 bool Builder::isDragTileBlocked(const BeltPlan& p, Vec2i start, bool othersOk, bool allowReplace) const {
     if (isBlockedByPlayer(p.pos)) return true;
     // water: only a belt that is already there may stay (turned in place)
-    if (world.beltIdAt(p.pos) < 0 && const_cast<World&>(world).isWater(p.pos)) return true;
+    if (beltTileOnWater(p.pos)) return true;
     if (allowReplace) return false;
     if (!world.isCellBlocked(p.pos)) return false;
     if (p.pos == start) return !(world.beltIdAt(p.pos) >= 0 && othersOk);
     return !(segmentMatchesExisting(p) || segmentReversesExisting(p));
+}
+
+bool Builder::anyBeltTileOnWater(const std::vector<BeltPlan>& plan) const {
+    for (auto& p : plan)
+        if (beltTileOnWater(p.pos)) return true;
+    return false;
 }
 
 bool Builder::anyDragTileBlocked(const std::vector<BeltPlan>& plan, Vec2i start, bool allowReplace) const {

@@ -28,7 +28,7 @@ void publishTextFields() {
     for (auto& f : g_fields) active |= f.active;
     EM_ASM({
         Module.textFields = [];
-        Module.textSpace = [$0, $1];
+        Module.textSpace = new Array($0, $1);   // (no bare commas in EM_ASM: they split the macro)
         Module.textActive = !!$2;
         if (Module.keyboardFrame) Module.keyboardFrame();
     }, GetScreenWidth(), GetScreenHeight(), active ? 1 : 0);

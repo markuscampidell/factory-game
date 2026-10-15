@@ -1162,9 +1162,14 @@ void GameScreen::redoLast() {
 
 void GameScreen::applyUndo(std::vector<UndoRecord>& from, std::vector<UndoRecord>& to, const char* verb) {
     const UndoRecord& rec = from.back();
-    // where to show the message: the first thing it changes
-    const ObjSnap& any = rec.removed.empty() ? rec.added.front() : rec.removed.front();
-    float wx = float(any.pos.x * CELL_SIZE + CELL_SIZE / 2), wy = float(any.pos.y * CELL_SIZE);
+    // where to show the message: the first thing it changes (a landfill-only
+    // action has no belts / machines in it)
+    Vec2i at = !rec.removed.empty() ? rec.removed.front().pos
+             : !rec.added.empty() ? rec.added.front().pos
+             : !rec.landfillRemoved.empty() ? rec.landfillRemoved.front()
+             : !rec.landfillAdded.empty() ? rec.landfillAdded.front()
+             : mouseTile();
+    float wx = float(at.x * CELL_SIZE + CELL_SIZE / 2), wy = float(at.y * CELL_SIZE);
     ItemAmounts delta;
     UndoRecord inverse;
     std::string v = verb;
