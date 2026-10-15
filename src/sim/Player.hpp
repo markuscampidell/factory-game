@@ -13,7 +13,7 @@ struct Player {
     static constexpr int SIZE = CELL_SIZE - 4;   // 28 px square
     static constexpr float SPEED = 1.5f;
     static constexpr float FRICTION = 0.85f;
-    static constexpr float WATER_SPEED = 0.7f;   // in water: 30% slower
+    static constexpr float WATER_SPEED = 0.5f;   // in water: 50% slower
 
     RectF rect{-SIZE / 2.0f, -SIZE / 2.0f, float(SIZE), float(SIZE)};
     float dx = 0, dy = 0;

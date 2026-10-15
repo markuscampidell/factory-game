@@ -622,7 +622,7 @@ void GameScreen::handleMouse(const Event& e) {
         }
         // Shift + wheel while holding landfill: its size (no zooming)
         if (shiftDown() && holdingLandfill()) {
-            if (!mouseOverOpenPanel(e.pos)) resizeLandfill(e.wheel > 0 ? 1 : -1);
+            if (!mouseOverOpenPanel(e.pos)) resizeLandfill(e.wheel > 0 ? -1 : 1);   // up: smaller, down: bigger
             return;
         }
         // anywhere else (not over a panel): zoom around the mouse

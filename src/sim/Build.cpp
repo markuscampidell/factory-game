@@ -319,12 +319,23 @@ Vec2i Builder::machineTopLeft(MachineType t, Vec2i mouseTile, Dir d) {
 }
 
 
+// Shift + placing a machine on water: landfill under its footprint (the
+// water tiles of it; 10 limestone each, part of the cost).
+static std::vector<Vec2i> shiftFill(MachineType t, Vec2i tl, Dir dir) {
+    std::vector<Vec2i> out;
+    Vec2i s = machineSize(t, dir);
+    for (int dy = 0; dy < s.y; ++dy)
+        for (int dx = 0; dx < s.x; ++dx) out.push_back({tl.x + dx, tl.y + dy});
+    return out;
+}
+
 PlaceStatus Builder::checkMachine(MachineType t, Vec2i mouseTile, Dir dir, bool allowReplace, ItemAmounts* cost) const {
     PlaceRequest r;
     r.type = t;
     r.pos = machineTopLeft(t, mouseTile, dir);
     r.dir = dir;
-    PlacePlan plan = planPlacement({r}, allowReplace);
+    auto fill = allowReplace ? shiftFill(t, r.pos, dir) : std::vector<Vec2i>{};
+    PlacePlan plan = planPlacement({r}, allowReplace, nullptr, false, &fill);
     if (cost) *cost = plan.cost;
     return plan.status;
 }
@@ -336,7 +347,8 @@ int Builder::placeMachine(MachineType t, Vec2i mouseTile, Dir dir, bool allowRep
     r.pos = machineTopLeft(t, mouseTile, dir);
     r.dir = dir;
     std::vector<PlaceRequest> reqs{r};
-    PlacePlan plan = planPlacement(reqs, allowReplace, protectedIds);
+    auto fill = allowReplace ? shiftFill(t, r.pos, dir) : std::vector<Vec2i>{};
+    PlacePlan plan = planPlacement(reqs, allowReplace, protectedIds, false, &fill);
     if (plan.status != PlaceStatus::Ok) return -1;
     if (delta) *delta = plan.delta;
     return executePlacement(reqs, plan)[0];   // new machine, or the identical one already there

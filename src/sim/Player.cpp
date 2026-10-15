@@ -30,7 +30,7 @@ void Player::update(World& world, int inX, int inY) {
     if (std::fabs(dx) < 0.01f) dx = 0;
     if (std::fabs(dy) < 0.01f) dy = 0;
 
-    // Wading through water is 30% slower (the speed itself is kept, so you
+    // Wading through water is 50% slower (the speed itself is kept, so you
     // are at full speed again as soon as you step out).
     Vec2i here{int(std::floor(rect.cx() / CELL_SIZE)), int(std::floor(rect.cy() / CELL_SIZE))};
     float k = world.isWater(here) ? WATER_SPEED : 1.0f;

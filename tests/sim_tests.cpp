@@ -500,6 +500,20 @@ static void testLandfill() {
     // without its landfill the smelter couldn't go there
     Blueprint noFill = big; noFill.landfill.clear();
     CHECK(b.checkBlueprint(noFill, lake + Vec2i{0, 3}).status != PlaceStatus::Ok || !w.isWater(lake + Vec2i{0, 3}), "smelter on water without landfill");
+    // Shift + a machine on water: landfill under it, paid with limestone
+    {
+        Vec2i spot = lake;   // two free water tiles side by side
+        for (int y = lake.y - 60; y < lake.y + 60 && (spot == lake); ++y)
+            for (int x = lake.x - 60; x < lake.x + 60; ++x)
+                if (w.isWater({x, y}) && w.isWater({x + 1, y}) && !w.isCellBlocked({x, y}) && !w.isCellBlocked({x + 1, y})) { spot = {x, y}; break; }
+        p.inventory.tryAdd(LIME, 100);
+        int lime1 = p.inventory.amount(LIME), wetTiles = 0;
+        for (int dy = 0; dy < 1; ++dy) for (int dx = 0; dx < 2; ++dx) wetTiles += w.isWater(spot + Vec2i{dx, dy});
+        CHECK(b.checkMachine(MachineType::WaterPump, spot + Vec2i{1, 0}, Dir::Right, false) == PlaceStatus::OnWater, "pump on water without Shift");
+        int id = b.placeMachine(MachineType::WaterPump, spot + Vec2i{1, 0}, Dir::Right, true, nullptr);
+        CHECK(id >= 0 && !w.isWater(spot) && p.inventory.amount(LIME) == lime1 - 10 * wetTiles, "Shift + pump on water: id %d, %d limestone for %d tiles",
+              id, lime1 - p.inventory.amount(LIME), wetTiles);
+    }
     std::printf("  landfill: water tiles only, 10 limestone each, undo / redo, saved, in blueprints\n");
 }
 
