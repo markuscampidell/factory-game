@@ -173,6 +173,7 @@ void GameScreen::enterMapMode() {
     placingBelt_ = false;
     lastDragged_.reset();
     dragPlaced_.clear();
+    dragDelete_ = DragDelete::Undecided;
     hovered_ = hoveredDelete_ = 0;
     // panels about things in the world close (a machine / storage panel
     // together with its inventory); inventory / crafting / blueprints stay
@@ -729,12 +730,13 @@ void GameScreen::handlePlacement(const Event& e) {
     if (e.type == EvType::MouseUp && e.button == MB_LEFT) {
         lastDragged_.reset();
         dragPlaced_.clear();
+        dragDelete_ = DragDelete::Undecided;
         return;
     }
     if (!(e.type == EvType::MouseDown && e.button == MB_LEFT)) return;
     Vec2i tile = screenToTile(e.pos);
 
-    if (mode_ == BuildMode::Deleting) { tryDeleteAt(tile); return; }
+    if (mode_ == BuildMode::Deleting) { dragDelete_ = DragDelete::Undecided; tryDeleteAt(tile); return; }
 
     if (mode_ == BuildMode::Building && selected_ == Buildable::Belt) {
         if (mouseOverOpenPanel(e.pos)) return;
@@ -796,10 +798,17 @@ void GameScreen::tryDeleteAt(Vec2i tile) {
         wy = rc.top();
     }
     ItemAmounts got;
-    bool deleted = builder_.deleteMachineAt(tile, &got);
-    if (!deleted) deleted = builder_.deleteBeltAt(tile, shiftDown(), &got);
+    bool deleted = false, landfill = false;
+    if (dragDelete_ != DragDelete::Landfill) {
+        deleted = builder_.deleteMachineAt(tile, &got);
+        if (!deleted) deleted = builder_.deleteBeltAt(tile, shiftDown(), &got);
+    }
+    // landfill: only where nothing stands on it (a machine / belt on it goes first)
+    if (!deleted && dragDelete_ != DragDelete::Objects && !world_.isCellBlocked(tile))
+        deleted = landfill = builder_.deleteLandfillAt(tile, &got);
     if (deleted) {
         lastDragged_ = tile;
+        dragDelete_ = landfill ? DragDelete::Landfill : DragDelete::Objects;
         showItemDelta(wx, wy, got);
     }
 }

@@ -449,6 +449,28 @@ bool Builder::placeLandfill(Vec2i tl, int size, ItemAmounts* delta) {
     return true;
 }
 
+static ItemAmounts landfillRefund(int tiles) {
+    ItemAmounts r;
+    for (auto& c : landfillTileCost()) addAmount(r, c.first, c.second * tiles);
+    return r;
+}
+
+bool Builder::canAffordLandfillDeletion(int tiles) const {
+    Inventory scratch = player.inventory;
+    for (auto& p : landfillRefund(tiles))
+        if (!scratch.tryAdd(p.first, p.second)) return false;
+    return true;
+}
+
+bool Builder::deleteLandfillAt(Vec2i t, ItemAmounts* delta) {
+    if (!canDeleteLandfillAt(t) || !canAffordLandfillDeletion(1)) return false;
+    ItemAmounts got = landfillRefund(1);
+    for (auto& p : got) player.inventory.tryAdd(p.first, p.second);
+    world.removeLandfill(t);
+    if (delta) *delta = got;
+    return true;
+}
+
 Builder::TakeResult Builder::pickUpUnderPlayer(ItemAmounts* got) {
     if (got) got->clear();
     const RectF& r = player.rect;
@@ -827,10 +849,23 @@ Builder::UndoResult Builder::undo(const UndoRecord& rec, ItemAmounts* delta, Und
 // Area delete
 // ---------------------------------------------------------------------------
 Builder::AreaDelete Builder::deleteArea(Vec2i a, Vec2i b, ItemAmounts* refunded, int* removed) {
-    std::vector<int> belts, machines;
-    gatherSelection(world, makeSelection(a, b), belts, machines);   // same rules as copying
-    if (belts.empty() && machines.empty()) return AreaDelete::Nothing;
+    // same rules as Copy area: belts / machines if there are any, otherwise landfill
+    SelectionContent sc = gatherContent(world, makeSelection(a, b), SelectRule::ObjectsFirst);
+    if (sc.empty()) return AreaDelete::Nothing;
 
+    if (!sc.landfill.empty()) {   // (then there are no belts / machines)
+        int n = int(sc.landfill.size());
+        if (!canAffordLandfillDeletion(n)) return AreaDelete::NoSpace;
+        ItemAmounts got = landfillRefund(n);
+        for (auto& p : got) player.inventory.tryAdd(p.first, p.second);
+        for (Vec2i t : sc.landfill) world.removeLandfill(t);
+        if (refunded) *refunded = got;
+        if (removed) *removed = n;
+        return AreaDelete::Ok;
+    }
+
+    const std::vector<int>& belts = sc.belts;
+    const std::vector<int>& machines = sc.machines;
     Inventory scratch = player.inventory;
     if (!applyRefunds(scratch, belts, machines)) return AreaDelete::NoSpace;
 

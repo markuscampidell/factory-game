@@ -33,6 +33,7 @@ void GameScreen::startSelecting(bool forList) {
     bpTargetBook_ = 0;       // (the book's own button sets these afterwards)
     bpConfigIndex_ = -1;
     bpPendingName_.clear();
+    bpIncludeLandfill_ = true;
     bpDragging_ = false;
     notify(forList ? "New blueprint: drag a rectangle over what you want to save"
                    : "Copy area: drag a rectangle over what you want to copy");
@@ -79,8 +80,10 @@ void GameScreen::startPlacing(const Blueprint& bp) {
 
 void GameScreen::finishSelection(Vec2i end) {
     bpDragging_ = false;
-    Blueprint bp = captureBlueprint(world_, bpDragStart_, end);
-    if (bp.empty()) { notify("Nothing selected - drag over machines or belts"); return; }
+    // blueprints take everything (the dialog can leave the landfill out);
+    // Copy area takes belts / machines if there are any, otherwise landfill
+    Blueprint bp = captureBlueprint(world_, bpDragStart_, end, bpForList_ ? SelectRule::Everything : SelectRule::ObjectsFirst);
+    if (bp.empty()) { notify("Nothing selected - drag over machines, belts or landfill"); return; }
     if (bpForList_) {
         // don't place anything yet: ask for a name first
         int n = 1;
@@ -100,7 +103,10 @@ void GameScreen::finishSelection(Vec2i end) {
     }
     bp.name = "Clipboard";
     clipboard_ = bp;
-    notify("Copied area: " + objects(bp.count()) + " - click to place, Ctrl+V to paste again");
+    std::string what = bp.belts.empty() && bp.machines.empty()
+                           ? std::to_string(bp.landfill.size()) + " landfill tile" + (bp.landfill.size() == 1 ? "" : "s")
+                           : objects(bp.count());
+    notify("Copied area: " + what + " - click to place, Ctrl+V to paste again");
     startPlacing(bp);
 }
 
@@ -108,7 +114,17 @@ void GameScreen::finishSelection(Vec2i end) {
 // "Save blueprint" dialog
 // ---------------------------------------------------------------------------
 Rectangle GameScreen::bpSaveRect() const {
-    return centeredRect(std::floor(ui::screenW() / 2), std::floor(ui::screenH() / 2) - 40, 440, 250);
+    return centeredRect(std::floor(ui::screenW() / 2), std::floor(ui::screenH() / 2) - 40, 440, 290);
+}
+
+// "Include landfill" checkbox (under the name); the label is part of it
+Rectangle GameScreen::bpLandfillCheckRect() const {
+    Rectangle r = bpSaveRect();
+    return {r.x + 30, r.y + 162, r.width - 60, 22};
+}
+
+Blueprint GameScreen::bpPendingResult() const {
+    return bpIncludeLandfill_ ? bpPending_ : withoutLandfill(bpPending_);
 }
 
 void GameScreen::savePendingBlueprint() {
@@ -116,12 +132,15 @@ void GameScreen::savePendingBlueprint() {
     size_t a = name.find_first_not_of(' ');
     if (a == std::string::npos) { bpSaveError_ = "Please enter a name"; return; }
     name = name.substr(a, name.find_last_not_of(' ') - a + 1);
+    Blueprint result = bpPendingResult();
+    if (result.empty()) { bpSaveError_ = "Only landfill selected - tick 'Include landfill'"; return; }
     bool editing = bpConfigIndex_ >= 0 && bpConfigIndex_ < int(blueprints_.size());
     for (size_t k = 0; k < blueprints_.size(); ++k)
         if (blueprints_[k].name == name && !(editing && int(k) == bpConfigIndex_)) {
             bpSaveError_ = "A blueprint with this name already exists";
             return;
         }
+    bpPending_ = std::move(result);
     bpPending_.name = name;
     int book = 0;   // the list opens again afterwards when it was used from there
     bool reopen = editing;
@@ -174,6 +193,11 @@ bool GameScreen::bpSaveHandle(const Event& e) {
             return true;
         }
         if (inRect(saveBtn, e.pos)) { savePendingBlueprint(); return true; }
+        if (inRect(bpLandfillCheckRect(), e.pos) && !bpPending_.landfill.empty()) {
+            bpIncludeLandfill_ = !bpIncludeLandfill_;
+            bpSaveError_.clear();
+            return true;
+        }
     }
     if (bpNameInput_) {
         bpNameInput_->handle(e);
@@ -189,15 +213,27 @@ void GameScreen::drawBpSaveDialog() {
     drawModalShade();
     bool editing = bpConfigIndex_ >= 0;
     drawPanel(r, editing ? "Configure blueprint" : bpTargetBook_ > 0 ? "Save blueprint in book" : "Save blueprint");
-    std::string info = std::to_string(bpPending_.w) + "x" + std::to_string(bpPending_.h) + ", " + objects(bpPending_.count());
+    Blueprint result = bpPendingResult();   // (what Save stores)
+    std::string info = std::to_string(result.w) + "x" + std::to_string(result.h) + ", " + objects(result.count());
     textCentered(info, r.x + r.width / 2, r.y + 56, 16, rgba(50, 50, 50));
-    textCentered(fitText("Cost: " + costText(bpPending_.cost()), r.width - 40, 15), r.x + r.width / 2, r.y + 78, 15, rgba(50, 50, 50));
+    textCentered(fitText("Cost: " + costText(result.cost()), r.width - 40, 15), r.x + r.width / 2, r.y + 78, 15, rgba(50, 50, 50));
     text("Name:", r.x + 30, r.y + 92, 14, ui::TEXT_DIM);
     if (bpNameInput_) {
         bpNameInput_->update(GetFrameTime());
         bpNameInput_->draw();
     }
-    if (!bpSaveError_.empty()) textCentered(bpSaveError_, r.x + r.width / 2, r.y + 165, 15, rgba(170, 20, 20));
+    // "Include landfill" (greyed out when the selection has none)
+    {
+        bool any = !bpPending_.landfill.empty();
+        Rectangle row = bpLandfillCheckRect();
+        Rectangle cb{row.x, row.y + 1, 20, 20};
+        DrawRectangleRec(cb, any && hovered(row) ? hex("#DDEEFF") : any ? WHITE : hex("#E5E5E5"));
+        lineRect(cb, 2, any ? hex("#333333") : hex("#999999"));
+        if (any && bpIncludeLandfill_) DrawRectangleRec({cb.x + 3, cb.y + 3, cb.width - 6, cb.height - 6}, hex("#3A7D44"));
+        std::string label = any ? "Include landfill (" + std::to_string(bpPending_.landfill.size()) + " tiles)" : "Include landfill (none selected)";
+        text(label, cb.x + cb.width + 8, cb.y + 2, 15, any ? BLACK : ui::TEXT_DIM);
+    }
+    if (!bpSaveError_.empty()) textCentered(bpSaveError_, r.x + r.width / 2, r.y + 203, 15, rgba(170, 20, 20));
     Rectangle reselect{r.x + 30, r.y + r.height - 62, 150, 40};
     Rectangle saveBtn{r.x + r.width - 30 - 190, r.y + r.height - 62, 190, 40};
     drawButton(reselect, "Reselect", ui::BTN);
@@ -475,8 +511,14 @@ void GameScreen::drawBlueprintMode() {
         // highlight exactly what would be taken
         if (bpDragging_ || bpSaveOpen_) {
             const Color hl = cut ? Color{255, 60, 60, 70} : Color{255, 255, 255, 60};
-            std::vector<int> belts, machines;
-            gatherSelection(world_, s, belts, machines);
+            // same rules as finishSelection / Builder::deleteArea
+            bool everything = !cut && bpForList_;
+            SelectionContent sc = gatherContent(world_, s, everything ? SelectRule::Everything : SelectRule::ObjectsFirst);
+            if (bpSaveOpen_ && !bpIncludeLandfill_) sc.landfill.clear();
+            const std::vector<int>& belts = sc.belts;
+            const std::vector<int>& machines = sc.machines;
+            for (Vec2i p : sc.landfill)
+                DrawRectangleRec({float(p.x * CELL_SIZE), float(p.y * CELL_SIZE), CELL_SIZE, CELL_SIZE}, hl);
             for (int id : belts) {
                 Vec2i p = world_.belt(id).pos;
                 DrawRectangleRec({float(p.x * CELL_SIZE), float(p.y * CELL_SIZE), CELL_SIZE, CELL_SIZE}, hl);
@@ -570,7 +612,7 @@ void GameScreen::drawCostInfo() {
         textCentered(msg, h.x + h.width / 2, h.y + 14, 16, ui::TEXT_DIM);
     };
     if (mode_ == BuildMode::Deleting && bpMode_ == BpMode::None) {
-        hintBox("Drag to delete one at a time - hold Shift to delete a whole connected belt - Delete area for many", 120);
+        hintBox("Drag to delete one at a time (landfill too, once nothing stands on it) - Shift: a whole connected belt - Delete area for many", 120);
         return;
     }
     if (mode_ != BuildMode::Building) return;
@@ -914,6 +956,7 @@ void GameScreen::openConfigure(int index) {
     resetBuildState();
     bpConfigIndex_ = index;
     bpPending_ = blueprints_[size_t(index)];
+    bpIncludeLandfill_ = true;   // (unticking it takes the stored landfill out)
     bpSaveError_.clear();
     bpSaveOpen_ = true;
     Rectangle r = bpSaveRect();

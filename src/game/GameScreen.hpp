@@ -182,6 +182,11 @@ private:
     Vec2i beltStart_;
     std::optional<Vec2i> lastDragged_;
     std::set<int> dragPlaced_;
+    // What a delete drag removes, decided by its first deletion: belts /
+    // machines or landfill - never both, so dragging over a machine on
+    // landfill doesn't take the landfill under it away too.
+    enum class DragDelete : uint8_t { Undecided, Objects, Landfill };
+    DragDelete dragDelete_ = DragDelete::Undecided;
     bool justPlaced_ = false;
     TileRef hoveredDelete_ = 0;
     TileRef hovered_ = 0;
@@ -328,7 +333,10 @@ private:
     int bpConfigIndex_ = -1;           // >= 0: editing blueprints_[i] instead of adding
     std::string bpPendingName_;        // name typed before "Reselect"
     void openConfigure(int index);
-    Blueprint bpPending_;
+    Blueprint bpPending_;              // everything selected (landfill too)
+    bool bpIncludeLandfill_ = true;    // "Include landfill" checkbox (on whenever the dialog opens fresh)
+    Blueprint bpPendingResult() const; // what Save stores: bpPending_, without landfill if unchecked
+    Rectangle bpLandfillCheckRect() const;
     Vec2i bpPendingA_, bpPendingB_;
     std::optional<TextInput> bpNameInput_;
     std::string bpSaveError_;

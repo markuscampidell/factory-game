@@ -70,5 +70,25 @@ Selection makeSelection(Vec2i start, Vec2i end);
 // with one or two tiles).
 void gatherSelection(const World& w, const Selection& s, std::vector<int>& belts, std::vector<int>& machines);
 
-// Everything a selection from `start` to `end` takes (see gatherSelection).
-Blueprint captureBlueprint(const World& w, Vec2i start, Vec2i end);
+// The landfilled tiles inside a selection (row by row).
+std::vector<Vec2i> gatherLandfill(const World& w, const Selection& s);
+
+// Which things a selection takes:
+//  * Everything: belts, machines and landfill (blueprints, Ctrl + B).
+//  * ObjectsFirst: belts and machines if there are any - otherwise only the
+//    landfill, and only tiles with nothing on them (Copy area / Delete area:
+//    dragging over a factory on landfill takes just the factory).
+enum class SelectRule { Everything, ObjectsFirst };
+struct SelectionContent {
+    std::vector<int> belts, machines;
+    std::vector<Vec2i> landfill;
+    bool empty() const { return belts.empty() && machines.empty() && landfill.empty(); }
+};
+SelectionContent gatherContent(const World& w, const Selection& s, SelectRule rule);
+
+// What a selection from `start` to `end` takes (see gatherContent).
+Blueprint captureBlueprint(const World& w, Vec2i start, Vec2i end, SelectRule rule = SelectRule::Everything);
+
+// The same blueprint without its landfill ("Include landfill" off): size and
+// offsets shrink to the belts and machines. Empty if there is nothing else.
+Blueprint withoutLandfill(const Blueprint& bp);

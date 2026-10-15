@@ -142,6 +142,12 @@ public:
     };
     LandfillCheck checkLandfill(Vec2i topLeft, int size) const;
     bool placeLandfill(Vec2i topLeft, int size, ItemAmounts* delta = nullptr);
+    // Deleting landfill turns it back into water and gives the limestone
+    // back (10 per tile) - only where nothing stands on it, and only if all
+    // of it fits into the inventory. Recorded for undo.
+    bool canDeleteLandfillAt(Vec2i t) const { return world.isLandfill(t) && !world.isCellBlocked(t); }
+    bool canAffordLandfillDeletion(int tiles) const;
+    bool deleteLandfillAt(Vec2i t, ItemAmounts* delta = nullptr);
 
     // R when not building: turns the belt, splitter, smelter or assembler at
     // tile t by `steps` quarter turns clockwise. Everything inside stays
@@ -183,9 +189,12 @@ public:
 
     // ---- deleting everything in a rectangle (Ctrl+X) ----
     enum class AreaDelete { Ok, Nothing, NoSpace };
-    // All or nothing: everything the selection takes (see gatherSelection,
-    // max MAX_SELECTION x MAX_SELECTION) is removed and refunded - build cost plus contents - but
-    // only if all of it fits into the inventory. `refunded` gets the items.
+    // All or nothing: what the selection takes (gatherContent with
+    // SelectRule::ObjectsFirst, max MAX_SELECTION x MAX_SELECTION) is removed and refunded -
+    // the belts and machines (build cost plus contents) if there are any,
+    // otherwise the landfill (10 limestone per tile) - but only if all of it
+    // fits into the inventory. `refunded` gets the items, `removed` counts
+    // objects or landfill tiles.
     AreaDelete deleteArea(Vec2i a, Vec2i b, ItemAmounts* refunded = nullptr, int* removed = nullptr);
 
     std::vector<int> connectedBelts(int beltId) const;

@@ -29,7 +29,7 @@ const std::vector<ControlSection>& controlSections() {
         {"Building (bottom-of-screen hotbar)",
          {{"Hotbar (click a slot)", "Select something to build (Smelter, Assembler, Belt, Splitter, Storage, Miner, Water Pump, Landfill), Nothing (deselects) or Delete"},
           {"X", "Toggle delete mode"},
-          {"Landfill", "Turns water into land: 10 Limestone per water tile (land tiles in the square are left as they are and cost nothing). A square of 2 x 2 to start; + / - or Shift + mouse wheel (down: bigger, up: smaller) change it from 1 x 1 to 10 x 10 (no zooming while you hold it). Click or drag to place. Ctrl + Z gives the limestone back. Copy area / blueprints take landfill along"},
+          {"Landfill", "Turns water into land: 10 Limestone per water tile (land tiles in the square are left as they are and cost nothing). A square of 2 x 2 to start; + / - or Shift + mouse wheel (down: bigger, up: smaller) change it from 1 x 1 to 10 x 10 (no zooming while you hold it). Click or drag to place. Ctrl + Z gives the limestone back. Delete mode deletes landfill too (one tile per click, once nothing stands on it; the limestone comes back). Copy area / Delete area take landfill only when no machines or belts are inside the rectangle; blueprints take everything ('Include landfill' in the save dialog)"},
           {"Water", "Lakes and seas: nothing can be built on water (belts included) and walking through it is 50% slower. A Water Pump has to stand right next to water - while you hold one, the free shore tiles near the mouse light up. (It doesn't pump anything yet.)"},
           {"Hotbar slots", "The row is always clickable; hover a slot for its name and cost"},
           {"Alt / Icons button (bottom right)", "Show / hide the output icons on machines and the item icons on chests"},
@@ -58,13 +58,13 @@ const std::vector<ControlSection>& controlSections() {
                               {"E (press or hold)", "Pick up the items on the belts and splitters you are standing on - hold it and walk along a belt to keep picking up"}}},
         {"Copy area, Paste & Blueprints",
          {{"Copy area / Paste / Delete area", "Buttons above the bottom right buttons - the same as Ctrl + C / Ctrl + V / Ctrl + X. Click the lit-up one again to stop"},
-          {"Ctrl + C", "Copy area: drag a rectangle over machines/belts, then click to place the copy (R / T turn it, G mirrors it)"},
-          {"Ctrl + X", "Delete many things: drag a rectangle - everything inside is removed and refunded (only if it all fits in your inventory). Right click: normal deleting"},
+          {"Ctrl + C", "Copy area: drag a rectangle over machines/belts, then click to place the copy (R / T turn it, G mirrors it). With no machines or belts inside, it copies the landfill instead"},
+          {"Ctrl + X", "Delete many things: drag a rectangle - the machines and belts inside are removed and refunded (only if it all fits in your inventory). With none inside, the landfill there turns back into water (10 Limestone back per tile). Right click: normal deleting"},
           {"Ctrl + V", "Place the last copy again (needs free space or identical things underneath, and the items in your inventory)"},
-          {"Ctrl + B", "Make a blueprint: drag a rectangle, then name it and press Save blueprint (or Reselect). ESC / click outside cancels"},
+          {"Ctrl + B", "Make a blueprint: drag a rectangle (it takes everything, landfill too), then name it and press Save blueprint (or Reselect). Untick 'Include landfill' to leave the landfill out. ESC / click outside cancels"},
           {"B", "Open the blueprint list: Add, Use or Delete blueprints"},
           {"Add blueprint book", "In the blueprint list: make a named book. Click its headline to open / close it; drag a blueprint onto a book to put it in, or onto empty space to take it out. Deleting a book deletes the blueprints in it. 'Add blueprint' on a book saves a new blueprint straight into it"},
-          {"Configure", "On a blueprint in the list: rename it or Reselect its area"},
+          {"Configure", "On a blueprint in the list: rename it, Reselect its area or take its landfill out ('Include landfill')"},
           {"Placing area", "Blueprints and copies can only be placed in your chunk and 4 chunks around it (9 x 9 chunks). While you hold one, that square is outlined"},
           {"Right Click", "While copying/placing: back to normal building"},
           {"ESC", "Cancel copying/placing completely"}}},
@@ -151,12 +151,12 @@ std::string GameScreen::hudButtonTooltip(Vector2 p) const {
         return markerPlacing_ ? "Click a spot in the world to place the marker - right click / ESC cancels"
                               : "Add map marker: pick it up, move around and left click to place it (or press P at the mouse)";
     if (inRect(copyButtonRect(), p))
-        return "Copy area (Ctrl + C): drag a rectangle over machines and belts, then click to place the copy";
+        return "Copy area (Ctrl + C): drag a rectangle over machines and belts (or only landfill), then click to place the copy";
     if (inRect(pasteButtonRect(), p))
         return clipboard_.empty() ? "Paste (Ctrl + V): nothing copied yet - use Copy area first"
                                   : "Paste (Ctrl + V): place your last copied area again";
     if (inRect(cutButtonRect(), p))
-        return "Delete area (Ctrl + X): drag a rectangle - everything inside is removed and refunded";
+        return "Delete area (Ctrl + X): drag a rectangle - machines and belts inside (or, if there are none, the landfill) are removed and refunded";
     if (!mouseOverOpenPanel(p)) {
         if (inRect(inventoryButtonRect(), p))
             return invOpen_ ? "Close your inventory (TAB)" : "Open your inventory (TAB)";

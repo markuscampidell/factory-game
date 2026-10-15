@@ -588,6 +588,7 @@ static std::map<ItemId, int> worldValue(World& w, Player& p) {
     for (auto& b : w.belts()) if (b.alive) for (auto& c : beltBuildCost()) v[c.first] += c.second;
     for (size_t i = 0; i < w.machineSlots(); ++i)
         if (w.machineAlive(int(i))) for (auto& c : machineSpec(w.machine(int(i)).type).cost) v[c.first] += c.second;
+    for (size_t i = 0; i < w.landfill().size(); ++i) for (auto& c : landfillTileCost()) v[c.first] += c.second;
     return v;
 }
 
@@ -1046,6 +1047,84 @@ static void testAreaDelete() {
     std::printf("  area delete: refunds build cost + contents, nothing happens without space\n");
 }
 
+// Copy area / Delete area take belts and machines if there are any, otherwise
+// only the landfill; blueprints take everything. Deleting landfill gives the
+// limestone back (only where nothing stands on it).
+static void testLandfillSelection() {
+    ItemId LIME = itemByStringId("limestone");
+    World w; w.seed = 424242;
+    Player p; p.setCenter(-50000, -50000);
+    p.inventory.tryAdd(LIME, 400);
+    p.inventory.tryAdd(IRON_INGOT, 100);
+    p.inventory.tryAdd(COPPER_INGOT, 100);
+    Builder b(w, p);
+    Vec2i lake{0, 0};   // a 4x4 block of water
+    bool found = false;
+    for (int y = -400; y < 400 && !found; ++y)
+        for (int x = -400; x < 400 && !found; ++x) {
+            bool all = true;
+            for (int dy = 0; dy < 4 && all; ++dy)
+                for (int dx = 0; dx < 4 && all; ++dx) all = w.isWater({x + dx, y + dy});
+            if (all) { lake = {x, y}; found = true; }
+        }
+    CHECK(found, "no lake found");
+    if (!found) return;
+    Vec2i far = lake + Vec2i{3, 3};
+    CHECK(b.placeLandfill(lake, 4) && w.landfill().size() == 16, "4x4 landfill");
+    Vec2i beltAt = lake + Vec2i{1, 2};
+    CHECK(b.placeBelts(beltAt, beltAt, Dir::Right, false), "belt on landfill");
+
+    // a belt inside: Copy area takes only the belt, a blueprint everything
+    Blueprint copy = captureBlueprint(w, lake, far, SelectRule::ObjectsFirst);
+    CHECK(copy.belts.size() == 1 && copy.landfill.empty() && copy.w == 1 && copy.h == 1, "copy with a belt took %d landfill tiles", int(copy.landfill.size()));
+    Blueprint all = captureBlueprint(w, lake, far);
+    CHECK(all.belts.size() == 1 && all.landfill.size() == 16 && all.w == 4 && all.h == 4, "blueprint: %d belts, %d landfill", int(all.belts.size()),
+          int(all.landfill.size()));
+    Blueprint noFill = withoutLandfill(all);
+    CHECK(noFill.landfill.empty() && noFill.belts.size() == 1 && (noFill.belts[0].off == Vec2i{0, 0}) && noFill.w == 1 && noFill.h == 1,
+          "without landfill: %dx%d", noFill.w, noFill.h);
+    Blueprint onlyFill; onlyFill.landfill = {{0, 0}}; onlyFill.w = onlyFill.h = 1;
+    CHECK(withoutLandfill(onlyFill).empty(), "landfill-only blueprint without landfill isn't empty");
+
+    // single tiles: not under the belt, yes next to it (limestone back)
+    CHECK(!b.canDeleteLandfillAt(beltAt) && !b.deleteLandfillAt(beltAt) && w.isLandfill(beltAt), "deleted landfill under a belt");
+    ItemAmounts d;
+    int lime = p.inventory.amount(LIME);
+    CHECK(b.deleteLandfillAt(lake, &d) && w.isWater(lake) && p.inventory.amount(LIME) == lime + 10 && asMap(d)[LIME] == 10, "single landfill tile");
+    CHECK(!b.deleteLandfillAt(lake), "deleted water");
+
+    // Delete area: the belt only, then (nothing else left) the landfill
+    auto before = worldValue(w, p);
+    int n = 0;
+    CHECK(b.deleteArea(lake, far, &d, &n) == Builder::AreaDelete::Ok && n == 1 && !w.beltAt(beltAt) && w.landfill().size() == 15,
+          "area delete with a belt: %d removed, %d landfill left", n, int(w.landfill().size()));
+    CHECK(worldValue(w, p) == before, "area delete (belt) changed item totals");
+    Blueprint fillCopy = captureBlueprint(w, lake, far, SelectRule::ObjectsFirst);
+    CHECK(fillCopy.belts.empty() && fillCopy.landfill.size() == 15, "copy without things: %d landfill tiles", int(fillCopy.landfill.size()));
+
+    // not enough space: nothing happens
+    {
+        Player full; full.setCenter(-50000, -50000);
+        for (int i = 0; i < 45; ++i) full.inventory.tryAdd(COAL, 100);
+        Builder fb(w, full);
+        CHECK(fb.deleteArea(lake, far) == Builder::AreaDelete::NoSpace && w.landfill().size() == 15, "landfill area delete without space");
+        CHECK(!fb.deleteLandfillAt(beltAt) && w.isLandfill(beltAt), "landfill tile deleted without space");
+    }
+    w.recordChanges = true;
+    w.takeRecord();
+    lime = p.inventory.amount(LIME);
+    CHECK(b.deleteArea(lake, far, &d, &n) == Builder::AreaDelete::Ok && n == 15 && w.landfill().empty() && w.isWater(far) &&
+              p.inventory.amount(LIME) == lime + 150 && asMap(d)[LIME] == 150,
+          "landfill area delete: %d tiles", n);
+    CHECK(worldValue(w, p) == before, "area delete (landfill) changed item totals");
+    CHECK(b.deleteArea(lake, far) == Builder::AreaDelete::Nothing, "water only should be nothing");
+    UndoRecord rec = w.takeRecord();
+    CHECK(rec.landfillRemoved.size() == 15, "undo record: %d tiles", int(rec.landfillRemoved.size()));
+    CHECK(b.undo(rec) == Builder::UndoResult::Ok && w.landfill().size() == 15 && p.inventory.amount(LIME) == lime, "undo of landfill delete");
+    w.recordChanges = false;
+    std::printf("  landfill: Copy / Delete area take things first, landfill only alone; blueprints everything; deleting refunds limestone\n");
+}
+
 static bool itemDeltaEmpty(const ItemAmounts& d) {
     for (auto& x : d) if (x.second != 0) return false;
     return true;
@@ -1194,6 +1273,7 @@ int main(int argc, char** argv) {
     testBlueprintTransform();
     testBlueprints();
     testAreaDelete();
+    testLandfillSelection();
     testItemDeltas();
     testSelectionLimit();
     testPlaceInPlace();

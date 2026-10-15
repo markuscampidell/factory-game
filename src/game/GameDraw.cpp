@@ -628,7 +628,15 @@ void GameScreen::drawGhostBelts() {
 }
 
 void GameScreen::drawDeleteGhost() {
-    if (hoveredDelete_ == 0) return;
+    if (hoveredDelete_ == 0) {   // bare landfill: turned back into water
+        Vec2i t = mouseTile();
+        if (dragDelete_ == DragDelete::Objects || !builder_.canDeleteLandfillAt(t)) return;
+        Color c = builder_.canAffordLandfillDeletion(1) ? Color{255, 0, 0, 100} : Color{255, 165, 0, 100};
+        Vector2 p = toScreen(float(t.x * CELL_SIZE), float(t.y * CELL_SIZE));
+        DrawRectangleRec({p.x, p.y, CELL_SIZE, CELL_SIZE}, c);
+        return;
+    }
+    if (dragDelete_ == DragDelete::Landfill) return;   // this drag only deletes landfill
     bool shift = shiftDown();
     std::vector<int> belts;
     bool canDelete;

@@ -125,17 +125,32 @@ void gatherSelection(const World& w, const Selection& s, std::vector<int>& belts
         }
 }
 
-Blueprint captureBlueprint(const World& w, Vec2i start, Vec2i end) {
+std::vector<Vec2i> gatherLandfill(const World& w, const Selection& s) {
+    std::vector<Vec2i> fill;
+    if (w.landfill().empty()) return fill;
+    for (int y = s.y0; y <= s.y1; ++y)
+        for (int x = s.x0; x <= s.x1; ++x)
+            if (w.isLandfill({x, y})) fill.push_back({x, y});
+    return fill;
+}
+
+SelectionContent gatherContent(const World& w, const Selection& s, SelectRule rule) {
+    SelectionContent c;
+    gatherSelection(w, s, c.belts, c.machines);
+    if (rule == SelectRule::Everything) { c.landfill = gatherLandfill(w, s); return c; }
+    if (!c.belts.empty() || !c.machines.empty()) return c;   // things first: no landfill
+    for (Vec2i t : gatherLandfill(w, s))
+        if (!w.isCellBlocked(t)) c.landfill.push_back(t);   // (a machine left out may stand on it)
+    return c;
+}
+
+Blueprint captureBlueprint(const World& w, Vec2i start, Vec2i end, SelectRule rule) {
     Blueprint bp;
-    std::vector<int> beltIds, machineIds;
-    Selection sel = makeSelection(start, end);
-    gatherSelection(w, sel, beltIds, machineIds);
-    std::vector<Vec2i> fill;   // landfilled tiles inside the selection
-    if (!w.landfill().empty())
-        for (int y = sel.y0; y <= sel.y1; ++y)
-            for (int x = sel.x0; x <= sel.x1; ++x)
-                if (w.isLandfill({x, y})) fill.push_back({x, y});
-    if (beltIds.empty() && machineIds.empty() && fill.empty()) return bp;
+    SelectionContent sc = gatherContent(w, makeSelection(start, end), rule);
+    const std::vector<int>& beltIds = sc.belts;
+    const std::vector<int>& machineIds = sc.machines;
+    const std::vector<Vec2i>& fill = sc.landfill;
+    if (sc.empty()) return bp;
 
     // bounding box of everything taken (machines may stick out)
     int minX = INT_MAX, minY = INT_MAX, maxX = INT_MIN, maxY = INT_MIN;
@@ -174,4 +189,11 @@ Blueprint captureBlueprint(const World& w, Vec2i start, Vec2i end) {
     for (Vec2i p : fill) bp.landfill.push_back(p - origin);
     bp.computeMasks();
     return bp;
+}
+
+Blueprint withoutLandfill(const Blueprint& bp) {
+    Blueprint out = bp;
+    out.landfill.clear();
+    normalize(out);   // (masks stay: belts keep their places relative to each other)
+    return out;
 }
