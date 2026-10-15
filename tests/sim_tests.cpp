@@ -9,6 +9,7 @@
 #include "../src/sim/Terrain.hpp"
 #include <nlohmann/json.hpp>
 #include <fstream>
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <map>
@@ -680,18 +681,74 @@ static void testHandCraftingAndRecipeSwitch() {
 // Every 2nd tile in [-256, 256)^2 for seed 424242 must match what the
 // original Python terrain.py produced (the file lists the non-grass tiles).
 static void testTerrainMatchesPython(const std::map<std::pair<int, int>, int>& expected) {
-    int bad = 0, checked = 0, ore = 0;
+    int bad = 0, checked = 0, ore = 0, badWater = 0, water = 0;
     for (int y = -256; y < 256; y += 2)
         for (int x = -256; x < 256; x += 2) {
             auto it = expected.find({x, y});
             int want = it == expected.end() ? 0 : it->second;
-            int got = terrain::tileTypeAt(424242, x, y);
+            int got = terrain::oreTileTypeAt(424242, x, y);   // the ore layer (Python has no water)
             ++checked;
             ore += got != 0;
             if (got != want) ++bad;
+            // with water: a tile is either the Python tile or water (water replaces ore)
+            int full = terrain::tileTypeAt(424242, x, y);
+            if (!(full == got || full == terrain::WATER_TILE)) ++badWater;
+            water += full == terrain::WATER_TILE;
         }
     CHECK(bad == 0, "%d of %d terrain tiles differ from Python", bad, checked);
-    std::printf("  terrain: %d tiles (%d ore) identical to the Python generator\n", checked - bad, ore);
+    CHECK(badWater == 0, "%d tiles neither the Python tile nor water", badWater);
+    std::printf("  terrain: %d tiles (%d ore) identical to the Python generator; %d water tiles on top\n", checked - bad, ore, water);
+}
+
+// Lakes / seas: nothing can be built on water, a water pump has to touch it,
+// the start area is dry, walking through water is slower.
+static void testWater() {
+    const int64_t seed = 424242;
+    // the start is dry
+    bool dry = true;
+    for (int y = -40; y <= 40 && dry; ++y)
+        for (int x = -40; x <= 40; ++x)
+            if (terrain::isWaterTile(terrain::tileTypeAt(seed, x, y))) { dry = false; break; }
+    CHECK(dry, "water near the start");
+    // find a straight shore: a land tile whose right neighbour is water, with
+    // land around it for a 2x2 pump
+    World w; w.seed = seed;
+    Vec2i shore{0, 0};
+    bool found = false;
+    for (int y = -400; y < 400 && !found; ++y)
+        for (int x = -400; x < 400 && !found; ++x)
+            if (!w.isWater({x, y}) && !w.isWater({x - 1, y}) && !w.isWater({x, y + 1}) && !w.isWater({x - 1, y + 1}) &&
+                w.isWater({x + 1, y}) && w.oreAt({x, y}) == NO_ITEM && w.oreAt({x - 1, y}) == NO_ITEM && w.oreAt({x, y + 1}) == NO_ITEM &&
+                w.oreAt({x - 1, y + 1}) == NO_ITEM) { shore = {x, y}; found = true; }
+    CHECK(found, "no shore found");
+    if (!found) return;
+    Vec2i water = shore + Vec2i{1, 0};
+    Player p; p.setCenter(-50000, -50000);
+    p.inventory.tryAdd(IRON_INGOT, 200);
+    p.inventory.tryAdd(COPPER_INGOT, 100);
+    Builder b(w, p);
+    // pump: top-left at (shore.x - 1, shore.y) covers shore and its left neighbour, touching the water on the right
+    auto pumpAt = [&](Vec2i tl) { return b.checkMachine(MachineType::WaterPump, tl + Vec2i{1, 1}, Dir::Right, false); };   // mouse -> top-left - (1,1)
+    CHECK(pumpAt({shore.x - 1, shore.y}) == PlaceStatus::Ok, "pump next to water: %d", int(pumpAt({shore.x - 1, shore.y})));
+    CHECK(pumpAt({shore.x, shore.y}) == PlaceStatus::OnWater, "pump on water: %d", int(pumpAt({shore.x, shore.y})));
+    // a pump far inland needs water
+    CHECK(b.checkMachine(MachineType::WaterPump, {1, 1}, Dir::Right, false) == PlaceStatus::NeedsWater, "pump at the (dry) start allowed");
+    CHECK(b.checkMachine(MachineType::Smelter, water + Vec2i{1, 0}, Dir::Right, false) == PlaceStatus::OnWater, "smelter on water allowed");
+    CHECK(!b.placeBelts(water, water, Dir::Right, false), "belt on water placed");
+    CHECK(b.placeBelts(shore, shore, Dir::Right, false), "belt on the shore refused");
+    w.removeBelt(w.beltIdAt(shore));   // (the pump goes there next)
+    int pump = b.placeMachine(MachineType::WaterPump, {shore.x, shore.y + 1}, Dir::Right, false, nullptr);   // top-left (shore.x - 1, shore.y)
+    CHECK(pump >= 0 && w.machine(pump).pos == Vec2i(shore.x - 1, shore.y) && w.machine(pump).w == 2, "pump next to water not placed");
+    // walking: 30% slower in water
+    Player a, c;
+    a.setCenter(float(water.x * CELL_SIZE + CELL_SIZE / 2), float(water.y * CELL_SIZE + CELL_SIZE / 2));
+    c.setCenter(0, 0);
+    float ay0 = a.rect.y, cy0 = c.rect.y;
+    a.update(w, 0, 1);
+    c.update(w, 0, 1);
+    float da = a.rect.y - ay0, dc = c.rect.y - cy0;
+    CHECK(std::fabs(da - dc * Player::WATER_SPEED) < 0.01f, "in water moved %.3f, on land %.3f", da, dc);
+    std::printf("  water: dry start, nothing on water, pumps need water, 30%% slower walking\n");
 }
 
 static void testSaveRoundTrip() {
@@ -1000,6 +1057,7 @@ int main(int argc, char** argv) {
     std::printf("Machines\n");
     testProductionChain();
     testOutputSides();
+    testWater();
     testOutputSidesSave();
     testTakeContents();
     testPickUpUnderPlayer();

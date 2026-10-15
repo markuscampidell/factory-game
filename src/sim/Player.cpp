@@ -30,11 +30,16 @@ void Player::update(World& world, int inX, int inY) {
     if (std::fabs(dx) < 0.01f) dx = 0;
     if (std::fabs(dy) < 0.01f) dy = 0;
 
+    // Wading through water is 30% slower (the speed itself is kept, so you
+    // are at full speed again as soon as you step out).
+    Vec2i here{int(std::floor(rect.cx() / CELL_SIZE)), int(std::floor(rect.cy() / CELL_SIZE))};
+    float k = world.isWater(here) ? WATER_SPEED : 1.0f;
+
     // Move in small steps (at most a quarter tile each), so even a very
     // fast player can't jump over a machine between two checks.
     const float maxStep = CELL_SIZE / 4.0f;
-    int steps = int(std::ceil(std::max(std::fabs(dx), std::fabs(dy)) / maxStep));
-    float sx = steps > 0 ? dx / float(steps) : 0, sy = steps > 0 ? dy / float(steps) : 0;
+    int steps = int(std::ceil(std::max(std::fabs(dx * k), std::fabs(dy * k)) / maxStep));
+    float sx = steps > 0 ? dx * k / float(steps) : 0, sy = steps > 0 ? dy * k / float(steps) : 0;
     for (int k = 0; k < steps; ++k) {
         if (sx != 0) {
             rect.x += sx;

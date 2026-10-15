@@ -47,7 +47,7 @@ struct Belt {
 // ---------------------------------------------------------------------------
 // Machines (smelter, assembler, miner, storage, splitter)
 // ---------------------------------------------------------------------------
-enum class MachineType : uint8_t { Smelter, Assembler, Splitter, Storage, Miner, Count };
+enum class MachineType : uint8_t { Smelter, Assembler, Splitter, Storage, Miner, WaterPump, Count };
 
 // A miner digs one ore every 2 s; mining by hand is half that speed.
 constexpr int MINER_TICKS = 2 * TICKS_PER_SECOND;
@@ -247,6 +247,7 @@ public:
     // only shows chunks that are already explored.
     uint8_t tileType(Vec2i t);
     ItemId oreAt(Vec2i t);
+    bool isWater(Vec2i t);   // lakes / seas: nothing can be built there
     bool isExplored(int cx, int cy) const { return explored_.count(Vec2i{cx, cy}) != 0; }
     void markExplored(int cx, int cy) { explored_.insert(Vec2i{cx, cy}); }
     const std::unordered_set<Vec2i, Vec2iHash>& explored() const { return explored_; }

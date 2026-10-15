@@ -17,7 +17,7 @@
 #include <vector>
 
 enum class BuildMode { None, Building, Deleting };
-enum class Buildable { Smelter, Assembler, Belt, Splitter, Storage, Miner };
+enum class Buildable { Smelter, Assembler, Belt, Splitter, Storage, Miner, WaterPump };
 
 inline Buildable toBuildable(MachineType t) {
     switch (t) {
@@ -25,6 +25,7 @@ inline Buildable toBuildable(MachineType t) {
         case MachineType::Splitter: return Buildable::Splitter;
         case MachineType::Storage: return Buildable::Storage;
         case MachineType::Miner: return Buildable::Miner;
+        case MachineType::WaterPump: return Buildable::WaterPump;
         default: return Buildable::Smelter;
     }
 }
@@ -36,6 +37,7 @@ inline MachineType toMachine(Buildable b) {
         case Buildable::Splitter: return MachineType::Splitter;
         case Buildable::Storage: return MachineType::Storage;
         case Buildable::Miner: return MachineType::Miner;
+        case Buildable::WaterPump: return MachineType::WaterPump;
         default: return MachineType::Smelter;
     }
 }
@@ -383,6 +385,7 @@ private:
     // 1 pixel per tile terrain texture of an explored chunk (map view and
     // minimap); nullptr if the chunk hasn't been discovered
     const Texture2D* mapChunkTexture(int cx, int cy);   // nullptr: nothing to show (black)
+    void drawPumpShore(Vec2i around);   // holding a water pump: the shore tiles where it fits
     bool overHudButtons(Vector2 p) const;
     std::string hudButtonTooltip(Vector2 p) const;   // "" if not over a button
     void drawHudTooltips();

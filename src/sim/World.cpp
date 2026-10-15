@@ -14,6 +14,8 @@ const MachineSpec& machineSpec(MachineType t) {
         {"splitter", "Splitter", 1, 1, "assets/sprites/machines/splitter.png", {{iron, 4}}},
         {"storage", "Storage", 2, 2, "assets/sprites/machines/storage.png", {{iron, 10}}},
         {"miner", "Miner", 2, 3, "assets/sprites/machines/miner.png", {{iron, 5}}},
+        // must stand right next to water; does nothing yet (water will go into pipes)
+        {"water_pump", "Water Pump", 2, 2, "assets/sprites/machines/water_pump.png", {{iron, 5}, {copper, 3}}},
     };
     return specs[int(t)];
 }
@@ -203,6 +205,7 @@ uint8_t World::tileType(Vec2i t) {
 }
 
 ItemId World::oreAt(Vec2i t) { return terrain::oreForTileType(tileType(t)); }
+bool World::isWater(Vec2i t) { return terrain::isWaterTile(tileType(t)); }
 
 // ---------------------------------------------------------------------------
 // Undo recording

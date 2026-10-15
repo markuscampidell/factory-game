@@ -22,6 +22,15 @@ constexpr int64_t SALT_RADIUS = 109;
 constexpr int64_t SALT_EDGE = 113;
 constexpr int64_t SALT_PRIORITY = 127;
 
+// Water: big seas from very large, soft noise; lakes from smaller noise.
+// No water within DRY_RADIUS tiles of 0,0; between that and FADE_RADIUS it
+// gets gradually rarer, so the start area is land.
+constexpr int64_t SALT_SEA = 131, SALT_SEA2 = 137, SALT_SEA3 = 139;
+constexpr int64_t SALT_LAKE = 149, SALT_LAKE2 = 151;
+constexpr double SEA_SCALE = 220, SEA_THRESHOLD = 0.70;
+constexpr double LAKE_SCALE = 40, LAKE_THRESHOLD = 0.79;
+constexpr double DRY_RADIUS = 48, FADE_RADIUS = 128;
+
 // Same integer hash as _hash01 in terrain.py. Python integers are unbounded,
 // but every step is masked to 32 bits, and wrapping 64-bit arithmetic gives
 // the same low 32 bits, so the results are bit-identical.
@@ -125,6 +134,17 @@ uint8_t patchTileType(int64_t seed, int64_t ccx, int64_t ccy) {
     return 4;
 }
 
+bool waterAt(int64_t seed, int x, int y) {
+    double d = std::hypot(double(x), double(y));
+    if (d < DRY_RADIUS) return false;
+    double fade = d < FADE_RADIUS ? (FADE_RADIUS - d) / (FADE_RADIUS - DRY_RADIUS) * 0.35 : 0;   // near the start: rarer
+    double sea = valueNoise(seed, x, y, SALT_SEA, SEA_SCALE) * 0.62 + valueNoise(seed, x, y, SALT_SEA2, SEA_SCALE / 3) * 0.26 +
+                 valueNoise(seed, x, y, SALT_SEA3, SEA_SCALE / 10) * 0.12;
+    if (sea > SEA_THRESHOLD + fade) return true;
+    double lake = valueNoise(seed, x, y, SALT_LAKE, LAKE_SCALE) * 0.84 + valueNoise(seed, x, y, SALT_LAKE2, LAKE_SCALE / 3) * 0.16;
+    return lake > LAKE_THRESHOLD + fade;
+}
+
 } // namespace
 
 ItemId oreForTileType(uint8_t t) {
@@ -134,6 +154,12 @@ ItemId oreForTileType(uint8_t t) {
 }
 
 uint8_t tileTypeAt(int64_t seed, int tileX, int tileY) {
+    // water replaces ore: a patch under a lake is simply cut off at the shore
+    if (waterAt(seed, tileX, tileY)) return WATER_TILE;
+    return oreTileTypeAt(seed, tileX, tileY);
+}
+
+uint8_t oreTileTypeAt(int64_t seed, int tileX, int tileY) {
     int64_t ccx0 = floorDiv(tileX, CANDIDATE_CELL_TILES);
     int64_t ccy0 = floorDiv(tileY, CANDIDATE_CELL_TILES);
     const double maxReach = PATCH_BASE_RADIUS_TILES + PATCH_RADIUS_JITTER_TILES + PATCH_EDGE_NOISE_STRENGTH;

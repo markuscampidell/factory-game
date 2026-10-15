@@ -8,6 +8,8 @@
 
 namespace {
 const Color GROUND{110, 88, 60, 255};
+const Color WATER{52, 110, 170, 255};
+const Color WATER_EDGE{110, 165, 210, 255};   // lighter line where water meets land
 // 30% opacity so the grid doesn't overpower the world
 const Color GRID_COLOR{204, 204, 204, 77};
 const Color CHUNK_COLOR{255, 140, 0, 77};
@@ -128,8 +130,19 @@ void GameScreen::drawTerrain() {
     int l, t, r, b;
     cam_.visibleTiles(l, t, r, b);
     float icon = CELL_SIZE * 0.7f;
+    const float edge = 3;
     for (int y = t; y < b; ++y)
         for (int x = l; x < r; ++x) {
+            if (world_.isWater({x, y})) {
+                float px = float(x * CELL_SIZE), py = float(y * CELL_SIZE);
+                DrawRectangleRec({px, py, CELL_SIZE, CELL_SIZE}, WATER);
+                // shoreline on the sides that touch land
+                if (!world_.isWater({x, y - 1})) DrawRectangleRec({px, py, CELL_SIZE, edge}, WATER_EDGE);
+                if (!world_.isWater({x, y + 1})) DrawRectangleRec({px, py + CELL_SIZE - edge, CELL_SIZE, edge}, WATER_EDGE);
+                if (!world_.isWater({x - 1, y})) DrawRectangleRec({px, py, edge, CELL_SIZE}, WATER_EDGE);
+                if (!world_.isWater({x + 1, y})) DrawRectangleRec({px + CELL_SIZE - edge, py, edge, CELL_SIZE}, WATER_EDGE);
+                continue;
+            }
             ItemId ore = world_.oreAt({x, y});
             if (ore == NO_ITEM) continue;
             Vector2 p = toScreen(float(x * CELL_SIZE), float(y * CELL_SIZE));
@@ -166,6 +179,7 @@ static Color oreMapColor(uint8_t tileType) {
         case 2: return {205, 120, 60, 255};   // copper
         case 3: return {35, 35, 40, 255};     // coal
         case 4: return {215, 205, 175, 255};  // limestone
+        case 5: return WATER;                 // water
         default: return GROUND;
     }
 }
@@ -177,6 +191,7 @@ Color machineMapColor(MachineType t) {
         case MachineType::Splitter: return {60, 190, 90, 255};
         case MachineType::Storage: return {170, 120, 60, 255};
         case MachineType::Miner: return {230, 200, 40, 255};
+        case MachineType::WaterPump: return {120, 215, 235, 255};
         default: return {200, 200, 200, 255};
     }
 }
@@ -470,6 +485,22 @@ void GameScreen::drawBuildMode() {
     }
 }
 
+// While holding a water pump: light up the free land tiles right next to
+// water near the mouse - a pump covering one of them can be placed.
+void GameScreen::drawPumpShore(Vec2i around) {
+    const int R = 10;
+    const Color fill{120, 220, 255, 70}, line{120, 220, 255, 170};
+    for (int y = around.y - R; y <= around.y + R; ++y)
+        for (int x = around.x - R; x <= around.x + R; ++x) {
+            Vec2i p{x, y};
+            if (world_.isWater(p) || world_.refAt(p) != 0) continue;
+            if (!(world_.isWater({x + 1, y}) || world_.isWater({x - 1, y}) || world_.isWater({x, y + 1}) || world_.isWater({x, y - 1}))) continue;
+            Rectangle rc{float(x * CELL_SIZE), float(y * CELL_SIZE), CELL_SIZE, CELL_SIZE};
+            DrawRectangleRec(rc, fill);
+            DrawRectangleLinesEx(rc, 1, line);
+        }
+}
+
 void GameScreen::drawGhostMachine() {
     MachineType type = toMachine(selected_);
     Dir dir = Dir(splitterRot_);   // splitters: 4 directions, a miner: standing / lying
@@ -477,6 +508,7 @@ void GameScreen::drawGhostMachine() {
     Vec2i mt = mouseTile();
     Vec2i tl = Builder::machineTopLeft(type, mt, dir);
     PlaceStatus st = builder_.checkMachine(type, mt, Dir(splitterRot_), shiftDown());
+    if (type == MachineType::WaterPump) drawPumpShore(mt);
 
     // Splitter: show how neighbouring belts would connect
     if (type == MachineType::Splitter && st != PlaceStatus::Blocked) {
@@ -509,6 +541,7 @@ void GameScreen::drawGhostMachine() {
         case PlaceStatus::NoSpace: overlay = {255, 165, 0, 80}; break;
         case PlaceStatus::NoFunds: overlay = {255, 255, 0, 80}; break;
         case PlaceStatus::NoOre: overlay = {128, 0, 128, 80}; break;
+        case PlaceStatus::OnWater: case PlaceStatus::NeedsWater: overlay = {40, 110, 230, 110}; break;
         case PlaceStatus::Undiscovered: overlay = {20, 20, 20, 170}; break;
         default: break;
     }

@@ -13,6 +13,15 @@ const ItemAmounts& beltBuildCost() {
 // ---------------------------------------------------------------------------
 // Shared
 // ---------------------------------------------------------------------------
+bool touchesWater(World& w, MachineType t, Vec2i tl, Dir d) {
+    Vec2i s = machineSize(t, d);
+    for (int i = 0; i < s.x; ++i)
+        if (w.isWater({tl.x + i, tl.y - 1}) || w.isWater({tl.x + i, tl.y + s.y})) return true;
+    for (int i = 0; i < s.y; ++i)
+        if (w.isWater({tl.x - 1, tl.y + i}) || w.isWater({tl.x + s.x, tl.y + i})) return true;
+    return false;
+}
+
 void Builder::gatherOccupants(const std::vector<Vec2i>& cells, std::vector<int>& belts, std::vector<int>& machines) const {
     belts.clear();
     machines.clear();
@@ -114,7 +123,7 @@ PlacePlan Builder::planPlacement(const std::vector<PlaceRequest>& reqs, bool all
     World& w = const_cast<World&>(world);   // reading ore generates terrain; nothing else changes
     std::set<int> rmBelts, rmMachines;
     ItemAmounts cost, refunds;
-    bool blocked = false, noOre = false, undiscovered = false, outOfReach = false;
+    bool blocked = false, noOre = false, undiscovered = false, outOfReach = false, onWater = false, needsWater = false;
     for (const PlaceRequest& r : reqs) {
         PlaceStatus st = PlaceStatus::Ok;
         int keep = -1;
@@ -148,6 +157,8 @@ PlacePlan Builder::planPlacement(const std::vector<PlaceRequest>& reqs, bool all
             else if (ref > 0) {
                 if (world.belt(ref - 1).dir == r.dir || allowReplace) keep = ref - 1;   // updated in place
                 else st = PlaceStatus::Blocked;
+            } else if (w.isWater(r.pos)) {
+                st = PlaceStatus::OnWater;
             } else if (ref < 0 && !(allowReplace && !(protectedIds && protectedIds->count(-ref - 1)))) {
                 st = PlaceStatus::Blocked;
             } else {   // a new belt (a machine in the way is removed first)
@@ -177,12 +188,19 @@ PlacePlan Builder::planPlacement(const std::vector<PlaceRequest>& reqs, bool all
                 else { rmBelts.insert(ob.begin(), ob.end()); rmMachines.insert(om.begin(), om.end()); }
             }
             if (st == PlaceStatus::Ok && keep < 0) {
+                for (Vec2i c : cells)
+                    if (w.isWater(c)) { st = PlaceStatus::OnWater; break; }
+                if (st == PlaceStatus::Ok && r.type == MachineType::WaterPump && !touchesWater(w, r.type, r.pos, r.dir)) st = PlaceStatus::NeedsWater;
+            }
+            if (st == PlaceStatus::Ok && keep < 0) {
                 if (r.type == MachineType::Miner && firstOre(w, r.type, r.pos, r.dir) == NO_ITEM) st = PlaceStatus::NoOre;
                 for (auto& c : s.cost) addAmount(cost, c.first, c.second);
             }
         }
         blocked |= st == PlaceStatus::Blocked;
         noOre |= st == PlaceStatus::NoOre;
+        onWater |= st == PlaceStatus::OnWater;
+        needsWater |= st == PlaceStatus::NeedsWater;
         plan.each.push_back(st);
         plan.existing.push_back(keep);
     }
@@ -192,6 +210,8 @@ PlacePlan Builder::planPlacement(const std::vector<PlaceRequest>& reqs, bool all
     if (outOfReach) { plan.status = PlaceStatus::OutOfReach; return plan; }
     if (blocked) { plan.status = PlaceStatus::Blocked; return plan; }
     if (undiscovered) { plan.status = PlaceStatus::Undiscovered; return plan; }
+    if (onWater) { plan.status = PlaceStatus::OnWater; return plan; }
+    if (needsWater) { plan.status = PlaceStatus::NeedsWater; return plan; }
     if (noOre) { plan.status = PlaceStatus::NoOre; return plan; }
 
     // simulate on a copy: refunds in, cost out - same order as executePlacement
@@ -478,6 +498,8 @@ bool Builder::othersFreeOrMatching(const std::vector<BeltPlan>& plan, Vec2i star
 
 bool Builder::isDragTileBlocked(const BeltPlan& p, Vec2i start, bool othersOk, bool allowReplace) const {
     if (isBlockedByPlayer(p.pos)) return true;
+    // water: only a belt that is already there may stay (turned in place)
+    if (world.beltIdAt(p.pos) < 0 && const_cast<World&>(world).isWater(p.pos)) return true;
     if (allowReplace) return false;
     if (!world.isCellBlocked(p.pos)) return false;
     if (p.pos == start) return !(world.beltIdAt(p.pos) >= 0 && othersOk);

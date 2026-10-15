@@ -19,7 +19,13 @@
 // Undiscovered: (part of) it would be in a chunk you haven't explored yet.
 // OutOfReach: (part of) a blueprint / copy would be outside the chunks
 // around the player (Builder::blueprintReach).
-enum class PlaceStatus : uint8_t { Ok, Blocked, NoSpace, NoFunds, NoOre, Undiscovered, OutOfReach };
+// OnWater: something would stand on water; NeedsWater: a water pump that
+// doesn't touch water.
+enum class PlaceStatus : uint8_t { Ok, Blocked, NoSpace, NoFunds, NoOre, Undiscovered, OutOfReach, OnWater, NeedsWater };
+
+// Water pumps must have water right next to them (one of the tiles around
+// their footprint, not diagonally).
+bool touchesWater(World& w, MachineType t, Vec2i topLeft, Dir d);
 
 const ItemAmounts& beltBuildCost();
 

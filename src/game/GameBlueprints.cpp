@@ -213,6 +213,8 @@ void GameScreen::placeHeldBlueprint(Vector2 mouse) {
     switch (c.status) {
         case PlaceStatus::Blocked: floatText(w.x, w.y, "Something is in the way (Shift: replace it)", BAD_RED); return;
         case PlaceStatus::NoOre: floatText(w.x, w.y, "A miner here would have no ore under it", BAD_RED); return;
+        case PlaceStatus::OnWater: floatText(w.x, w.y, "Nothing can be built on water", BAD_RED); return;
+        case PlaceStatus::NeedsWater: floatText(w.x, w.y, "A water pump has to stand right next to water", BAD_RED); return;
         case PlaceStatus::NoFunds: floatText(w.x, w.y, "Not enough items in your inventory", BAD_RED); return;
         case PlaceStatus::NoSpace: floatText(w.x, w.y, "Not enough inventory space for what gets replaced", BAD_RED); return;
         case PlaceStatus::Undiscovered: floatText(w.x, w.y, "You haven't discovered this area yet", BAD_RED); return;
@@ -514,6 +516,7 @@ void GameScreen::drawBlueprintMode() {
     const Color red{255, 0, 0, 110}, purple{128, 0, 128, 110}, yellow{255, 255, 0, 90}, orange{255, 165, 0, 100};
     const Color dark{20, 20, 20, 170};   // undiscovered area
     const Color outside{150, 0, 0, 170}; // outside the square around the player
+    const Color waterTint{40, 110, 230, 110}; // on water / a pump without water
     auto itemTint = [&](Rectangle r) {   // the whole placement fails for item reasons
         if (c.status == PlaceStatus::NoFunds) DrawRectangleRec(r, yellow);
         else if (c.status == PlaceStatus::NoSpace) DrawRectangleRec(r, orange);
@@ -525,6 +528,7 @@ void GameScreen::drawBlueprintMode() {
         drawTexture(assets::belt(b.mask, b.dir), r, Color{255, 255, 255, 160});
         if (c.belts[i] == PlaceStatus::Blocked) DrawRectangleRec(r, red);
         else if (c.belts[i] == PlaceStatus::Undiscovered) DrawRectangleRec(r, dark);
+        else if (c.belts[i] == PlaceStatus::OnWater) DrawRectangleRec(r, waterTint);
         else if (c.belts[i] == PlaceStatus::OutOfReach) DrawRectangleRec(r, outside);
         else itemTint(r);
     }
@@ -539,6 +543,7 @@ void GameScreen::drawBlueprintMode() {
             drawItemIcon(rc->outputs[0].first, {r.x + r.width / 2 - 16, r.y + r.height / 2 - 16, 32, 32}, 160);
         if (c.machines[i] == PlaceStatus::Blocked) DrawRectangleRec(r, red);
         else if (c.machines[i] == PlaceStatus::NoOre) DrawRectangleRec(r, purple);
+        else if (c.machines[i] == PlaceStatus::OnWater || c.machines[i] == PlaceStatus::NeedsWater) DrawRectangleRec(r, waterTint);
         else if (c.machines[i] == PlaceStatus::Undiscovered) DrawRectangleRec(r, dark);
         else if (c.machines[i] == PlaceStatus::OutOfReach) DrawRectangleRec(r, outside);
         else itemTint(r);
@@ -600,6 +605,8 @@ void GameScreen::drawCostInfo() {
             case PlaceStatus::NoSpace: reason = "Not enough inventory space for what gets replaced"; swatch = {255, 165, 0, 255}; break;
             case PlaceStatus::NoFunds: reason = "Not enough items in your inventory"; swatch = {255, 255, 0, 255}; break;
             case PlaceStatus::NoOre: reason = "A miner needs ore under it"; swatch = {128, 0, 128, 255}; break;
+            case PlaceStatus::OnWater: reason = "Nothing can be built on water"; swatch = {40, 110, 230, 255}; break;
+            case PlaceStatus::NeedsWater: reason = "A water pump has to stand right next to water (the highlighted shore)"; swatch = {40, 110, 230, 255}; break;
             case PlaceStatus::Undiscovered: reason = "You haven't discovered this area yet"; swatch = {20, 20, 20, 255}; break;
             default: break;
         }

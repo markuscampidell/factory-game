@@ -893,6 +893,7 @@ void GameScreen::pickKey(const Event& e) {
             case MachineType::Splitter: select(Buildable::Splitter); break;
             case MachineType::Storage: select(Buildable::Storage); break;
             case MachineType::Miner: select(Buildable::Miner); break;
+            case MachineType::WaterPump: select(Buildable::WaterPump); break;
             default: break;
         }
     }
@@ -994,9 +995,9 @@ struct HotbarSlot { int key; int kind; Buildable b; }; // kind 0 machine, 1 none
 const HotbarSlot HOTBAR[] = {
     {KEY_ONE, 0, Buildable::Smelter},  {KEY_TWO, 0, Buildable::Assembler}, {KEY_THREE, 0, Buildable::Belt},
     {KEY_FOUR, 0, Buildable::Splitter}, {KEY_FIVE, 0, Buildable::Storage}, {KEY_SIX, 0, Buildable::Miner},
-    {KEY_SEVEN, 1, Buildable::Smelter}, {KEY_EIGHT, 2, Buildable::Smelter},
+    {KEY_SEVEN, 0, Buildable::WaterPump}, {KEY_EIGHT, 1, Buildable::Smelter}, {KEY_NINE, 2, Buildable::Smelter},
 };
-constexpr int HOTBAR_N = 8;
+constexpr int HOTBAR_N = 9;
 constexpr float SLOT = 56, GAP = 8, MARGIN_BOTTOM = 18;
 } // namespace
 
@@ -1011,7 +1012,7 @@ std::vector<Rectangle> GameScreen::hotbarRects() const {
 
 bool GameScreen::hotbarHandle(const Event& e) {
     if (e.type == EvType::KeyDown) {
-        int kp[] = {KEY_KP_1, KEY_KP_2, KEY_KP_3, KEY_KP_4, KEY_KP_5, KEY_KP_6, KEY_KP_7, KEY_KP_8};
+        int kp[] = {KEY_KP_1, KEY_KP_2, KEY_KP_3, KEY_KP_4, KEY_KP_5, KEY_KP_6, KEY_KP_7, KEY_KP_8, KEY_KP_9};
         for (int i = 0; i < HOTBAR_N; ++i)
             if (e.key == HOTBAR[i].key || e.key == kp[i]) { hotbarActivate(i); return true; }
         return false;
