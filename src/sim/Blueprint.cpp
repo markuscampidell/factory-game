@@ -7,8 +7,8 @@
 
 ItemAmounts Blueprint::cost() const {
     ItemAmounts total;
-    for (size_t i = 0; i < belts.size(); ++i)
-        for (auto& c : beltBuildCost()) addAmount(total, c.first, c.second);
+    for (auto& b : belts)
+        for (auto& c : beltCost(b.bridge)) addAmount(total, c.first, c.second);
     for (auto& m : machines)
         for (auto& c : machineSpec(m.type).cost) addAmount(total, c.first, c.second);
     for (auto& c : landfillTileCost()) addAmount(total, c.first, c.second * int(landfill.size()));
@@ -21,7 +21,7 @@ void Blueprint::computeMasks() {
     World tmp;
     tmp.seed = 0;
     std::vector<int> ids;
-    for (auto& b : belts) ids.push_back(tmp.addBelt(b.off, b.dir));
+    for (auto& b : belts) ids.push_back(b.bridge ? tmp.addBridge(b.off, b.dir) : tmp.addBelt(b.off, b.dir));
     for (auto& m : machines) {
         Vec2i s = machineSize(m.type, m.dir);
         bool free = true;
@@ -125,6 +125,21 @@ void gatherSelection(const World& w, const Selection& s, std::vector<int>& belts
         }
 }
 
+std::vector<int> gatherBridges(const World& w, const Selection& s) {
+    std::vector<int> out;
+    if (w.bridges().empty()) return out;
+    if (int(w.bridges().size()) < s.w() * s.h()) {   // few bridges: look at each
+        for (auto& kv : w.bridges())
+            if (kv.first.x >= s.x0 && kv.first.x <= s.x1 && kv.first.y >= s.y0 && kv.first.y <= s.y1) out.push_back(kv.second);
+        std::sort(out.begin(), out.end());
+        return out;
+    }
+    for (int y = s.y0; y <= s.y1; ++y)
+        for (int x = s.x0; x <= s.x1; ++x)
+            if (int id = w.bridgeIdAt({x, y}); id >= 0) out.push_back(id);
+    return out;
+}
+
 std::vector<Vec2i> gatherLandfill(const World& w, const Selection& s) {
     std::vector<Vec2i> fill;
     if (w.landfill().empty()) return fill;
@@ -134,20 +149,23 @@ std::vector<Vec2i> gatherLandfill(const World& w, const Selection& s) {
     return fill;
 }
 
-SelectionContent gatherContent(const World& w, const Selection& s, SelectRule rule) {
+SelectionContent gatherContent(const World& w, const Selection& s, SelectRule rule, Layers layers) {
     SelectionContent c;
-    gatherSelection(w, s, c.belts, c.machines);
+    if (hasGround(layers)) gatherSelection(w, s, c.belts, c.machines);
+    if (hasBridges(layers)) c.bridges = gatherBridges(w, s);
+    if (!hasGround(layers)) return c;   // (landfill is on the ground)
     if (rule == SelectRule::Everything) { c.landfill = gatherLandfill(w, s); return c; }
-    if (!c.belts.empty() || !c.machines.empty()) return c;   // things first: no landfill
+    if (!c.belts.empty() || !c.machines.empty() || !c.bridges.empty()) return c;   // things first: no landfill
     for (Vec2i t : gatherLandfill(w, s))
         if (!w.isCellBlocked(t)) c.landfill.push_back(t);   // (a machine left out may stand on it)
     return c;
 }
 
-Blueprint captureBlueprint(const World& w, Vec2i start, Vec2i end, SelectRule rule) {
+Blueprint captureBlueprint(const World& w, Vec2i start, Vec2i end, SelectRule rule, Layers layers) {
     Blueprint bp;
-    SelectionContent sc = gatherContent(w, makeSelection(start, end), rule);
-    const std::vector<int>& beltIds = sc.belts;
+    SelectionContent sc = gatherContent(w, makeSelection(start, end), rule, layers);
+    std::vector<int> beltIds = sc.belts;
+    beltIds.insert(beltIds.end(), sc.bridges.begin(), sc.bridges.end());   // (bridges are belts too)
     const std::vector<int>& machineIds = sc.machines;
     const std::vector<Vec2i>& fill = sc.landfill;
     if (sc.empty()) return bp;
@@ -174,7 +192,7 @@ Blueprint captureBlueprint(const World& w, Vec2i start, Vec2i end, SelectRule ru
 
     for (int id : beltIds) {
         const Belt& src = w.belt(id);
-        bp.belts.push_back({src.pos - origin, src.dir, src.filter, 0});
+        bp.belts.push_back({src.pos - origin, src.dir, src.filter, 0, src.bridge});
     }
     for (int id : machineIds) {
         const Machine& m = w.machine(id);

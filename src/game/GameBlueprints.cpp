@@ -55,7 +55,7 @@ void GameScreen::finishCut(Vec2i end) {
     int n = 0;
     Vec2i a = bpDragStart_;
     Vector2 center{float((a.x + end.x + 1) * CELL_SIZE) / 2, float((a.y + end.y + 1) * CELL_SIZE) / 2};
-    switch (builder_.deleteArea(a, end, &got, &n)) {
+    switch (builder_.deleteArea(a, end, &got, &n, layer_)) {   // only the current layer (L)
         case Builder::AreaDelete::Nothing:
             floatText(center.x, center.y, "Nothing to delete here", BAD_RED);
             break;
@@ -82,7 +82,7 @@ void GameScreen::finishSelection(Vec2i end) {
     bpDragging_ = false;
     // blueprints take everything (the dialog can leave the landfill out);
     // Copy area takes belts / machines if there are any, otherwise landfill
-    Blueprint bp = captureBlueprint(world_, bpDragStart_, end, bpForList_ ? SelectRule::Everything : SelectRule::ObjectsFirst);
+    Blueprint bp = captureBlueprint(world_, bpDragStart_, end, bpForList_ ? SelectRule::Everything : SelectRule::ObjectsFirst, layer_);
     if (bp.empty()) { notify("Nothing selected - drag over machines, belts or landfill"); return; }
     if (bpForList_) {
         // don't place anything yet: ask for a name first
@@ -255,6 +255,8 @@ void GameScreen::placeHeldBlueprint(Vector2 mouse) {
         case PlaceStatus::NoSpace: floatText(w.x, w.y, "Not enough inventory space for what gets replaced", BAD_RED); return;
         case PlaceStatus::Undiscovered: floatText(w.x, w.y, "You haven't discovered this area yet", BAD_RED); return;
         case PlaceStatus::OutOfReach: floatText(w.x, w.y, "Blueprints only fit inside the square around you", BAD_RED); return;
+        case PlaceStatus::TooLong: floatText(w.x, w.y, "Bridges are at most 4 tiles in a row", BAD_RED); return;
+        case PlaceStatus::Unconnected: floatText(w.x, w.y, "A bridge can't float - it has to start at a belt, splitter or machine", BAD_RED); return;
         default: break;
     }
     ItemAmounts delta;
@@ -513,20 +515,25 @@ void GameScreen::drawBlueprintMode() {
             const Color hl = cut ? Color{255, 60, 60, 70} : Color{255, 255, 255, 60};
             // same rules as finishSelection / Builder::deleteArea
             bool everything = !cut && bpForList_;
-            SelectionContent sc = gatherContent(world_, s, everything ? SelectRule::Everything : SelectRule::ObjectsFirst);
+            SelectionContent sc = gatherContent(world_, s, everything ? SelectRule::Everything : SelectRule::ObjectsFirst, layer_);
             if (bpSaveOpen_ && !bpIncludeLandfill_) sc.landfill.clear();
-            const std::vector<int>& belts = sc.belts;
-            const std::vector<int>& machines = sc.machines;
-            for (Vec2i p : sc.landfill)
-                DrawRectangleRec({float(p.x * CELL_SIZE), float(p.y * CELL_SIZE), CELL_SIZE, CELL_SIZE}, hl);
-            for (int id : belts) {
-                Vec2i p = world_.belt(id).pos;
-                DrawRectangleRec({float(p.x * CELL_SIZE), float(p.y * CELL_SIZE), CELL_SIZE, CELL_SIZE}, hl);
+            if (cut) {   // bridges that would float are deleted too
+                std::vector<int> all = sc.belts;
+                all.insert(all.end(), sc.bridges.begin(), sc.bridges.end());
+                for (int b : builder_.dependentBridges(all, sc.machines)) sc.bridges.push_back(b);
             }
-            for (int id : machines) {
-                RectF mr = world_.machine(id).pixelRect();
-                DrawRectangleRec({mr.x, mr.y, mr.w, mr.h}, hl);
+            for (Vec2i p : sc.landfill)   // (landfill: the whole tile)
+                DrawRectangleRec({float(p.x * CELL_SIZE), float(p.y * CELL_SIZE), CELL_SIZE, CELL_SIZE}, hl);
+            const Color hlStrong{hl.r, hl.g, hl.b, (unsigned char)std::min(255, hl.a * 2)};   // (only on the sprites: a bit stronger)
+            overlayBegin();
+            for (int id : sc.belts) overlayBelt(world_.belt(id), hlStrong);
+            for (int id : sc.machines) {
+                const Machine& m = world_.machine(id);
+                RectF mr = m.pixelRect();
+                overlayMachine(m.type, m.dir, {mr.x, mr.y, mr.w, mr.h}, hlStrong);
             }
+            for (int id : sc.bridges) overlayBelt(world_.belt(id), hlStrong);
+            overlayEnd();
         }
         DrawRectangleRec(r, cut ? CUT_FILL : SELECT_FILL);
         DrawRectangleLinesEx(r, 2 * t, cut ? CUT_LINE : SELECT_LINE);
@@ -559,10 +566,21 @@ void GameScreen::drawBlueprintMode() {
     const Color dark{20, 20, 20, 170};   // undiscovered area
     const Color outside{150, 0, 0, 170}; // outside the square around the player
     const Color waterTint{40, 110, 230, 110}; // on water / a pump without water
-    auto itemTint = [&](Rectangle r) {   // the whole placement fails for item reasons
-        if (c.status == PlaceStatus::NoFunds) DrawRectangleRec(r, yellow);
-        else if (c.status == PlaceStatus::NoSpace) DrawRectangleRec(r, orange);
-    };
+    // the whole placement fails for item reasons: yellow / orange (alpha 0: no tint)
+    const Color itemColor = c.status == PlaceStatus::NoFunds ? yellow : c.status == PlaceStatus::NoSpace ? orange : Color{0, 0, 0, 0};
+    auto itemTint = [&](Rectangle r) { if (itemColor.a) DrawRectangleRec(r, itemColor); };   // (landfill tiles)
+    {   // (Shift) what it replaces / takes along: hidden under the copy, red outside it
+        TileSet ghost;
+        for (auto& b : placing_.belts) ghost.insert(tl + b.off);
+        for (auto& m : placing_.machines) {
+            Vec2i sz = machineSize(m.type, m.dir);
+            for (int dy = 0; dy < sz.y; ++dy)
+                for (int dx = 0; dx < sz.x; ++dx) ghost.insert(tl + m.off + Vec2i{dx, dy});
+        }
+        std::vector<GhostMachine> masked;
+        for (auto& m : placing_.machines) masked.push_back({m.type, m.dir, tl + m.off});
+        drawReplaced(c.removeBelts, c.removeMachines, c.status, ghost, masked);
+    }
     // landfill first (under everything): water it would fill in the landfill colour
     for (Vec2i o : placing_.landfill) {
         Vec2i p = tl + o;
@@ -571,17 +589,28 @@ void GameScreen::drawBlueprintMode() {
         DrawRectangleRec(r, wet ? Color{96, 76, 52, 190} : Color{96, 76, 52, 70});
         itemTint(r);   // not enough limestone / space: yellow / orange like the rest
     }
-    for (size_t i = 0; i < placing_.belts.size(); ++i) {
+    auto bridgeAt = [&](Vec2i o, Dir d) {   // in the held copy
+        for (auto& x : placing_.belts) if (x.bridge && x.off == o && x.dir == d) return true;
+        return false;
+    };
+    auto beltGhost = [&](size_t i) {
         const BlueprintBelt& b = placing_.belts[i];
         Vec2i p = tl + b.off;
         Rectangle r{float(p.x * CELL_SIZE), float(p.y * CELL_SIZE), CELL_SIZE, CELL_SIZE};
-        drawTexture(assets::belt(b.mask, b.dir), r, Color{255, 255, 255, 160});
-        if (c.belts[i] == PlaceStatus::Blocked) DrawRectangleRec(r, red);
-        else if (c.belts[i] == PlaceStatus::Undiscovered) DrawRectangleRec(r, dark);
-        else if (c.belts[i] == PlaceStatus::OnWater) DrawRectangleRec(r, waterTint);
-        else if (c.belts[i] == PlaceStatus::OutOfReach) DrawRectangleRec(r, outside);
-        else itemTint(r);
-    }
+        bool s0 = !bridgeAt(b.off - dirVec(b.dir), b.dir), s1 = !bridgeAt(b.off + dirVec(b.dir), b.dir);
+        if (b.bridge) drawBridgeSprite(r, b.dir, 200, s0, s1);
+        else drawTexture(assets::belt(b.mask, b.dir), r, Color{255, 255, 255, 160});
+        Color tint = itemColor;
+        if (c.belts[i] == PlaceStatus::Blocked || c.belts[i] == PlaceStatus::TooLong || c.belts[i] == PlaceStatus::Unconnected) tint = red;
+        else if (c.belts[i] == PlaceStatus::Undiscovered) tint = dark;
+        else if (c.belts[i] == PlaceStatus::OnWater) tint = waterTint;
+        else if (c.belts[i] == PlaceStatus::OutOfReach) tint = outside;
+        if (!tint.a) return;   // (only on the sprite's pixels)
+        if (b.bridge) overlayBridge(r, b.dir, Color{tint.r, tint.g, tint.b, (unsigned char)std::min(255, tint.a + 60)}, s0, s1);
+        else overlayBeltSprite(b.mask, b.dir, r, tint);
+    };
+    for (size_t i = 0; i < placing_.belts.size(); ++i)
+        if (!placing_.belts[i].bridge) beltGhost(i);   // ground belts first
     for (size_t i = 0; i < placing_.machines.size(); ++i) {
         const BlueprintMachine& m = placing_.machines[i];
         Vec2i s = machineSize(m.type, m.dir);
@@ -591,19 +620,22 @@ void GameScreen::drawBlueprintMode() {
         drawOutputSideArrows(m.type, m.dir, r, 190);
         if (const Recipe* rc = findRecipe(m.recipeId); showOutputs_ && rc && !rc->outputs.empty())   // Alt mode
             drawItemIcon(rc->outputs[0].first, {r.x + r.width / 2 - 16, r.y + r.height / 2 - 16, 32, 32}, 160);
-        if (c.machines[i] == PlaceStatus::Blocked) DrawRectangleRec(r, red);
-        else if (c.machines[i] == PlaceStatus::NoOre) DrawRectangleRec(r, purple);
-        else if (c.machines[i] == PlaceStatus::OnWater || c.machines[i] == PlaceStatus::NeedsWater) DrawRectangleRec(r, waterTint);
-        else if (c.machines[i] == PlaceStatus::Undiscovered) DrawRectangleRec(r, dark);
-        else if (c.machines[i] == PlaceStatus::OutOfReach) DrawRectangleRec(r, outside);
-        else itemTint(r);
+        Color tint = itemColor;
+        if (c.machines[i] == PlaceStatus::Blocked) tint = red;
+        else if (c.machines[i] == PlaceStatus::NoOre) tint = purple;
+        else if (c.machines[i] == PlaceStatus::OnWater || c.machines[i] == PlaceStatus::NeedsWater) tint = waterTint;
+        else if (c.machines[i] == PlaceStatus::Undiscovered) tint = dark;
+        else if (c.machines[i] == PlaceStatus::OutOfReach) tint = outside;
+        if (tint.a) overlayMachine(m.type, m.dir, r, tint);   // (only on the sprite's pixels)
     }
+    for (size_t i = 0; i < placing_.belts.size(); ++i)
+        if (placing_.belts[i].bridge) beltGhost(i);    // bridges over everything
     Rectangle outline{float(tl.x * CELL_SIZE), float(tl.y * CELL_SIZE), float(placing_.w * CELL_SIZE), float(placing_.h * CELL_SIZE)};
     DrawRectangleLinesEx(outline, 2 * t, SELECT_LINE);
 }
 
 // ---------------------------------------------------------------------------
-// Drawing (screen space): "Needs: ..." while holding something to build
+// Drawing (screen space): "Cost: ..." while holding something to build
 // ---------------------------------------------------------------------------
 void GameScreen::drawCostInfo() {
     if (bpSaveOpen_) return;
@@ -613,32 +645,39 @@ void GameScreen::drawCostInfo() {
         textCentered(msg, h.x + h.width / 2, h.y + 14, 16, ui::TEXT_DIM);
     };
     if (mode_ == BuildMode::Deleting && bpMode_ == BpMode::None) {
-        hintBox("Drag to delete one at a time (landfill too, once nothing stands on it) - Shift: a whole connected belt - Delete area for many", 120);
+        const char* layer = layer_ == Layers::All ? "Everything" : layer_ == Layers::Ground ? "Bottom" : "Top (bridges)";
+        hintBox(std::string("Layer: ") + layer + " (L)    Drag to delete one at a time (landfill too)    Shift: a whole belt / bridge", 120);
         return;
     }
     if (mode_ != BuildMode::Building) return;
     // only what is actually new: identical objects underneath are kept for free
-    ItemAmounts cost;
+    ItemAmounts cost, refund;   // refund: what replacing things (Shift) gives back
     PlaceStatus st = PlaceStatus::Ok;
     bool replace = shiftDown();
     if (bpMode_ == BpMode::Placing) {
         const auto& check = heldBlueprintCheck(Builder::blueprintTopLeft(placing_, mouseTile()), replace);
         st = check.status;
         cost = check.cost;
+        refund = check.refund;
     } else if (bpMode_ != BpMode::None) {
         return;
     } else if (selected_ == Buildable::Landfill) {
         auto lc = builder_.checkLandfill(Builder::landfillTopLeft(mouseTile(), landfillSize_), landfillSize_);
-        st = lc.status == PlaceStatus::NoFunds ? PlaceStatus::Ok : lc.status;   // (NoFunds: shown in red by "Needs:")
+        st = lc.status == PlaceStatus::NoFunds ? PlaceStatus::Ok : lc.status;   // (NoFunds: shown in red by "Cost:")
         cost = lc.cost;
+    } else if (selected_ == Buildable::Bridge) {
+        PlacePlan pp = builder_.checkBridge(bridgePlan(), replace);
+        st = pp.status;
+        cost = pp.cost;
+        refund = pp.refund;
     } else if (selected_ == Buildable::Belt) {
         // one belt, or the whole line while dragging
         Vec2i mt = mouseTile();
         auto plan = builder_.planBelts(placingBelt_ ? beltStart_ : mt, mt, beltDir_);
-        st = builder_.beltAffordability(plan, &cost);
+        st = builder_.beltAffordability(plan, &cost, &refund);
         if (builder_.anyBeltTileOnWater(plan)) st = PlaceStatus::OnWater;   // same hint + colour as machines
     } else {
-        st = builder_.checkMachine(toMachine(selected_), mouseTile(), Dir(splitterRot_), replace, &cost);
+        st = builder_.checkMachine(toMachine(selected_), mouseTile(), Dir(splitterRot_), replace, &cost, &refund);
     }
     float y = 120;
     if (st == PlaceStatus::OutOfReach) {
@@ -647,12 +686,34 @@ void GameScreen::drawCostInfo() {
         fillRound(r, 10, ui::PANEL_BG);
         textCentered(msg, r.x + r.width / 2, r.y + 16, 18, Color{170, 20, 20, 255}, true);
     } else {
-        bool enough = player_.inventory.hasEnough(cost);
-        std::string line = "Needs: " + costText(cost);
+        // What really happens to the inventory, item by item (what replacing
+        // gives back minus what the new things cost): Cost = what you lose
+        // overall, Change (a second line, only if there is any) = what you
+        // gain overall. The colour says whether it works.
+        bool gives = std::any_of(refund.begin(), refund.end(), [](const auto& p) { return p.second != 0; });
+        bool enough = st == PlaceStatus::NoFunds || st == PlaceStatus::NoSpace ? false : gives ? true : player_.inventory.hasEnough(cost);
+        ItemAmounts pay, gain;
+        {
+            ItemAmounts net = refund;
+            for (auto& c : cost) addAmount(net, c.first, -c.second);
+            for (auto& n : net) {
+                if (n.second < 0) addAmount(pay, n.first, -n.second);
+                else if (n.second > 0) addAmount(gain, n.first, n.second);
+            }
+        }
+        gives = !gain.empty();
+        std::string line = "Cost: " + costText(pay);   // ("free" when nothing is paid)
+        std::string line2 = gives ? "Change: " + itemDeltaText(gain) : "";
         Color c = enough ? Color{20, 90, 30, 255} : Color{170, 20, 20, 255};
-        Rectangle r = centeredRect(ui::screenW() / 2, y, measure(line, 18).x + 28, 32);
+        float bw = std::max(measure(line, 18, true).x, gives ? measure(line2, 18, true).x : 0.0f) + 28;
+        Rectangle r = centeredRect(ui::screenW() / 2, y, bw, 32);
+        if (gives) r.height += 24;
         fillRound(r, 10, ui::PANEL_BG);
         textCentered(line, r.x + r.width / 2, r.y + 16, 18, c, true);
+        if (gives) {
+            textCentered(line2, r.x + r.width / 2, r.y + 40, 18, Color{20, 90, 30, 255}, true);
+            y += 24;   // (the boxes below move down)
+        }
         // why the ghost has its colour (same colours as the ghost)
         const char* reason = nullptr;
         Color swatch{};
@@ -664,6 +725,11 @@ void GameScreen::drawCostInfo() {
             case PlaceStatus::OnWater: reason = "Nothing can be built on water"; swatch = {40, 110, 230, 255}; break;
             case PlaceStatus::NeedsWater: reason = "A water pump has to stand right next to water (the highlighted shore)"; swatch = {40, 110, 230, 255}; break;
             case PlaceStatus::NoWater: reason = "Landfill only goes on water"; swatch = {255, 0, 0, 255}; break;
+            case PlaceStatus::TooLong: reason = "Bridges are at most 4 tiles in a row - continue with a belt"; swatch = {255, 0, 0, 255}; break;
+            case PlaceStatus::Unconnected:
+                reason = "A bridge has to start at a belt, splitter or machine pointing straight into it";
+                swatch = {255, 0, 0, 255};
+                break;
             case PlaceStatus::Undiscovered: reason = "You haven't discovered this area yet"; swatch = {20, 20, 20, 255}; break;
             default: break;
         }
@@ -684,6 +750,8 @@ void GameScreen::drawCostInfo() {
         hintBox("R: rotate    Shift + R: rotate back    T: turn around    G: mirror left / right", y);
     else if (selected_ == Buildable::Belt || selected_ == Buildable::Splitter)
         hintBox("R: rotate    Shift + R: rotate back    T: turn around", y);
+    else if (selected_ == Buildable::Bridge)
+        hintBox("Click the start, click the end - always straight, at most 4 tiles; only connects to things pointing straight in / out    R: rotate", y);
     else if (selected_ == Buildable::Landfill)
         hintBox("Landfill " + std::to_string(landfillSize_) + " x " + std::to_string(landfillSize_) +
                     "    + / - or Shift + mouse wheel: size (1 - 10)    only the water tiles are filled and paid", y);
@@ -704,9 +772,11 @@ void GameScreen::drawBlueprintList() {
             line1 = bpForList_ ? "New blueprint: drag a rectangle" : "Copy area: drag a rectangle";
             line1 += " (max " + std::to_string(MAX_SELECTION) + " x " + std::to_string(MAX_SELECTION) + ")";
             line2 = mapMode() ? "Right click / ESC: cancel" : "Right click: back to building   ESC: cancel";
+            line2 += std::string("   Layer: ") + (layer_ == Layers::All ? "Everything" : layer_ == Layers::Ground ? "Bottom" : "Top") + " (L)";
         } else {
             line1 = "Delete: drag a rectangle (max " + std::to_string(MAX_SELECTION) + " x " + std::to_string(MAX_SELECTION) + ")";
             line2 = mapMode() ? "Right click / ESC: cancel" : "Right click: normal deleting   ESC: cancel";
+            line2 += std::string("   Layer: ") + (layer_ == Layers::All ? "Everything" : layer_ == Layers::Ground ? "Bottom" : "Top") + " (L)";
         }
         float w = std::max(measure(line1, 18).x, measure(line2, 16).x) + 28;
         Rectangle r = centeredRect(ui::screenW() / 2, 128, w, 52);   // top centre, out of the way

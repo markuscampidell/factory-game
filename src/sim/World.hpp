@@ -14,8 +14,17 @@
 // ---------------------------------------------------------------------------
 // Belts
 // ---------------------------------------------------------------------------
+// Bridges are belts one level up (`bridge`): they lie on their own layer
+// above the ground, so they can cross belts (and water). They only ever
+// connect straight: a bridge takes items from whatever points straight into
+// its first tile (even if a belt lies under that tile) and hands them to the
+// bridge in front of it or, at its end, to a belt / splitter pointing the
+// same way or a machine. At most BRIDGE_MAX_LENGTH bridge tiles in a row.
+constexpr int BRIDGE_MAX_LENGTH = 4;
+
 struct Belt {
     bool alive = false;
+    bool bridge = false;     // on the bridge layer (see above)
     Vec2i pos;
     Dir dir = Dir::Right;
 
@@ -204,11 +213,12 @@ inline size_t tileIndex(Vec2i t) { return size_t((t.y & (CHUNK_SIZE - 1)) * CHUN
 // ---------------------------------------------------------------------------
 struct ObjSnap {
     bool belt = false;
+    bool bridge = false;                       // a belt on the bridge layer
     Vec2i pos;
     MachineType type = MachineType::Smelter;   // machines
     Belt beltState;                            // belts (removed only)
     std::shared_ptr<const Machine> machine;    // machines (removed only)
-    bool sameObject(const ObjSnap& o) const { return belt == o.belt && pos == o.pos && (belt || type == o.type); }
+    bool sameObject(const ObjSnap& o) const { return belt == o.belt && pos == o.pos && (belt ? bridge == o.bridge : type == o.type); }
 };
 struct UndoRecord {
     std::vector<ObjSnap> removed, added;
@@ -240,8 +250,24 @@ public:
     Machine* machineAt(Vec2i t);
     int beltIdAt(Vec2i t) const { TileRef r = refAt(t); return r > 0 ? r - 1 : -1; }
     int machineIdAt(Vec2i t) const { TileRef r = refAt(t); return r < 0 ? -r - 1 : -1; }
-    bool isCellBlocked(Vec2i t) const { return refAt(t) != 0; }
+    bool isCellBlocked(Vec2i t) const { return refAt(t) != 0; }   // (ground layer only)
 
+    // ---- bridge layer (belts with `bridge` set; see Belt) ----
+    int bridgeIdAt(Vec2i t) const { auto it = bridges_.find(t); return it == bridges_.end() ? -1 : it->second; }
+    Belt* bridgeAt(Vec2i t) { int id = bridgeIdAt(t); return id >= 0 ? &belts_[size_t(id)] : nullptr; }
+    const std::unordered_map<Vec2i, int, Vec2iHash>& bridges() const { return bridges_; }
+    // The bridge at t pointing `d` if it is the first tile of its bridge
+    // (no bridge pointing `d` right behind it), as a TileRef; else 0.
+    TileRef bridgeStartRef(Vec2i t, Dir d) const;
+    // How many bridge tiles pointing `d` lie in a row through t (0 if none at t pointing d).
+    int bridgeRunLength(Vec2i t, Dir d) const;
+    // Bridges can't float: a bridge tile is supported if the first tile of
+    // its bridge has a belt, splitter or machine (ground) pointing straight
+    // into it. groundPushes: does the ground at `src` push items `travel`
+    // onto the next tile?
+    bool groundPushes(Vec2i src, Dir travel) const;
+    bool bridgeSupported(int id) const;
+    std::vector<int> floatingBridges() const;   // every bridge that isn't supported
     // ---- terrain ----
     // Reading terrain generates the chunk if needed and marks it explored.
     // Only the normal (zoomed-in) view and building do this; the map view
@@ -261,7 +287,8 @@ public:
 
     // ---- belts ----
     int addBelt(Vec2i pos, Dir dir);         // tile must be free
-    void removeBelt(int id);
+    int addBridge(Vec2i pos, Dir dir);       // bridge layer at pos must be free
+    void removeBelt(int id);                 // (bridges too)
     Belt& belt(int id) { return belts_[size_t(id)]; }
     const Belt& belt(int id) const { return belts_[size_t(id)]; }
     std::vector<Belt>& belts() { return belts_; }
@@ -289,6 +316,8 @@ public:
         int ignoreMachine = -1;
     };
     uint8_t computeIncoming(Vec2i pos, Dir dir, const Overlay* ov = nullptr) const;
+    // Which sides feed belt `id` (ground or bridge) and what feeds them.
+    uint8_t computeFeeds(const Belt& b, std::array<int32_t, 4>* refs) const;
 
 
     void markTopologyDirty() { topologyDirty_ = true; }
@@ -332,6 +361,7 @@ private:
     std::unordered_map<Vec2i, std::unique_ptr<Chunk>, Vec2iHash> chunks_;
     std::unordered_set<Vec2i, Vec2iHash> explored_;
     std::unordered_set<Vec2i, Vec2iHash> landfill_;
+    std::unordered_map<Vec2i, int, Vec2iHash> bridges_;   // tile -> belt id (bridge layer)
     std::vector<Belt> belts_;
     std::vector<int> freeBelts_;
     std::vector<std::unique_ptr<Machine>> machines_;
@@ -348,7 +378,7 @@ private:
         bool operator==(const SnapKey& o) const { return pos == o.pos && kind == o.kind; }
     };
     struct SnapKeyHash { size_t operator()(const SnapKey& k) const { return Vec2iHash()(k.pos) ^ (size_t(k.kind) * 0x9e3779b97f4a7c15ULL); } };
-    static SnapKey snapKey(const ObjSnap& s) { return {s.pos, uint8_t(s.belt ? 255 : int(s.type))}; }
+    static SnapKey snapKey(const ObjSnap& s) { return {s.pos, uint8_t(s.belt ? (s.bridge ? 254 : 255) : int(s.type))}; }
     std::unordered_map<SnapKey, int, SnapKeyHash> addedKeys_;   // -> how many entries
     bool inAdded(const ObjSnap& s) const { return addedKeys_.count(snapKey(s)) != 0; }
     void recordRemoved(ObjSnap snap);

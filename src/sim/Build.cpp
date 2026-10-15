@@ -10,6 +10,11 @@ const ItemAmounts& beltBuildCost() {
     return cost;
 }
 
+const ItemAmounts& bridgeBuildCost() {
+    static const ItemAmounts cost = {{itemByStringId("iron_ingot"), 20}, {itemByStringId("copper_ingot"), 10}};
+    return cost;
+}
+
 // ---------------------------------------------------------------------------
 // Shared
 // ---------------------------------------------------------------------------
@@ -37,7 +42,7 @@ bool Builder::applyRefunds(Inventory& inv, const std::vector<int>& belts, const 
     for (int id : belts) {
         const Belt& b = world.belt(id);
         if (b.item != NO_ITEM && !inv.tryAdd(b.item, 1)) return false;
-        for (auto& p : beltBuildCost())
+        for (auto& p : beltCost(b.bridge))
             if (!inv.tryAdd(p.first, p.second)) return false;
     }
     for (int id : machines)
@@ -50,7 +55,7 @@ ItemAmounts Builder::refundTotals(const std::vector<int>& belts, const std::vect
     ItemAmounts total;
     for (int id : belts) {
         if (world.belt(id).item != NO_ITEM) addAmount(total, world.belt(id).item, 1);
-        for (auto& c : beltBuildCost()) addAmount(total, c.first, c.second);
+        for (auto& c : beltCost(world.belt(id).bridge)) addAmount(total, c.first, c.second);
     }
     for (int id : machines)
         for (auto& p : world.machine(id).refundItems()) addAmount(total, p.first, p.second);
@@ -162,7 +167,18 @@ PlacePlan Builder::planPlacement(const std::vector<PlaceRequest>& reqs, bool all
             plan.existing.push_back(-1);
             continue;
         }
-        if (r.belt) {
+        if (r.belt && r.bridge) {
+            // bridge layer: anywhere (water too) except on machines / splitters
+            TileRef ref = world.refAt(r.pos);
+            int there = world.bridgeIdAt(r.pos);
+            bool prot = ref < 0 && protectedIds && protectedIds->count(-ref - 1);
+            if (ref < 0 && (!allowReplace || prot)) st = PlaceStatus::Blocked;
+            else if (there >= 0) keep = there;   // kept, or turned in place (no Shift needed) - if it still holds up (below)
+            if (st == PlaceStatus::Ok) {
+                if (ref < 0) rmMachines.insert(-ref - 1);   // (Shift) the machine goes
+                if (keep < 0) for (auto& c : bridgeBuildCost()) addAmount(cost, c.first, c.second);
+            }
+        } else if (r.belt) {
             TileRef ref = world.refAt(r.pos);
             if (isBlockedByPlayer(r.pos)) st = PlaceStatus::Blocked;
             else if (ref > 0) {
@@ -182,13 +198,17 @@ PlacePlan Builder::planPlacement(const std::vector<PlaceRequest>& reqs, bool all
             auto cells = footprint(r.pos, sz.x, sz.y);
             std::vector<int> ob, om;
             gatherOccupants(cells, ob, om);
+            std::vector<int> bridgesOver;   // nothing stands under a bridge but belts
+            for (Vec2i c : cells)
+                if (int bid = world.bridgeIdAt(c); bid >= 0) bridgesOver.push_back(bid);
             bool byPlayer = false;
             for (Vec2i c : cells) byPlayer |= isBlockedByPlayer(c);
             // (a turned miner has another footprint: not the same machine)
             bool same = ob.empty() && om.size() == 1 && world.machine(om[0]).type == r.type && world.machine(om[0]).pos == r.pos &&
                         world.machine(om[0]).w == sz.x && world.machine(om[0]).h == sz.y;
             if (byPlayer) st = PlaceStatus::Blocked;
-            else if (same && (!machineDirMatters(r.type) || world.machine(om[0]).dir == normalizeMachineDir(r.type, r.dir) || allowReplace)) {
+            else if (!bridgesOver.empty() && !allowReplace) st = PlaceStatus::Blocked;
+            else if (same) {   // the same machine: kept, or turned in place (no Shift needed)
                 keep = om[0];
                 if (recipeChange(world.machine(keep), r))
                     for (auto& p : bufferContents(world.machine(keep))) addAmount(refunds, p.first, p.second);
@@ -198,6 +218,7 @@ PlacePlan Builder::planPlacement(const std::vector<PlaceRequest>& reqs, bool all
                 if (!allowReplace || prot) st = PlaceStatus::Blocked;
                 else { rmBelts.insert(ob.begin(), ob.end()); rmMachines.insert(om.begin(), om.end()); }
             }
+            if (st == PlaceStatus::Ok) rmBelts.insert(bridgesOver.begin(), bridgesOver.end());   // (Shift)
             if (st == PlaceStatus::Ok && keep < 0) {
                 for (Vec2i c : cells)
                     if (wet(c)) { st = PlaceStatus::OnWater; break; }
@@ -215,11 +236,103 @@ PlacePlan Builder::planPlacement(const std::vector<PlaceRequest>& reqs, bool all
         plan.each.push_back(st);
         plan.existing.push_back(keep);
     }
+    // bridges: at most BRIDGE_MAX_LENGTH tiles in a row, counting the ones
+    // already there (minus what goes) and the new / turned ones
+    bool tooLong = false;
+    {
+        std::unordered_map<Vec2i, Dir, Vec2iHash> layer;
+        bool anyBridge = false;
+        for (size_t i = 0; i < reqs.size(); ++i) anyBridge |= reqs[i].bridge && plan.each[i] == PlaceStatus::Ok;
+        if (anyBridge) {
+            for (auto& kv : world.bridges())
+                if (!rmBelts.count(kv.second)) layer[kv.first] = world.belt(kv.second).dir;
+            for (size_t i = 0; i < reqs.size(); ++i)
+                if (reqs[i].bridge && plan.each[i] == PlaceStatus::Ok) layer[reqs[i].pos] = reqs[i].dir;
+            auto pointing = [&](Vec2i p, Dir d) { auto it = layer.find(p); return it != layer.end() && it->second == d; };
+            for (size_t i = 0; i < reqs.size(); ++i) {
+                if (!reqs[i].bridge || plan.each[i] != PlaceStatus::Ok) continue;
+                Dir d = reqs[i].dir;
+                int n = 1;
+                for (Vec2i p = reqs[i].pos - dirVec(d); pointing(p, d) && n <= BRIDGE_MAX_LENGTH; p = p - dirVec(d)) ++n;
+                for (Vec2i p = reqs[i].pos + dirVec(d); pointing(p, d) && n <= BRIDGE_MAX_LENGTH; p = p + dirVec(d)) ++n;
+                if (n > BRIDGE_MAX_LENGTH) { plan.each[i] = PlaceStatus::TooLong; tooLong = true; }
+            }
+        }
+    }
+    // Bridges can't float: after this placement the first tile of every
+    // bridge needs something on the ground pointing straight into it.
+    //  * a new (or turned) bridge without that: Unconnected, nothing happens
+    //  * a bridge that is supported now but wouldn't be (its belt turned or
+    //    replaced, its machine gone, ...): deleted with it and refunded
+    bool unconnected = false;
+    if (!world.bridges().empty() || std::any_of(reqs.begin(), reqs.end(), [](const PlaceRequest& r) { return r.bridge; })) {
+        std::unordered_map<Vec2i, Dir, Vec2iHash> layer, newBelts;
+        std::unordered_map<Vec2i, size_t, Vec2iHash> requested;   // bridge tile -> request
+        std::unordered_map<Vec2i, std::pair<MachineType, Dir>, Vec2iHash> newMachines;
+        for (size_t i = 0; i < reqs.size(); ++i) {
+            if (plan.each[i] != PlaceStatus::Ok) continue;
+            const PlaceRequest& r = reqs[i];
+            if (r.bridge) { layer[r.pos] = r.dir; requested[r.pos] = i; }
+            else if (r.belt) newBelts[r.pos] = r.dir;
+            else {
+                Vec2i sz = machineSize(r.type, r.dir);
+                for (Vec2i c : footprint(r.pos, sz.x, sz.y)) newMachines[c] = {r.type, normalizeMachineDir(r.type, r.dir)};
+            }
+        }
+        for (auto& kv : world.bridges())
+            if (!rmBelts.count(kv.second) && !layer.count(kv.first)) layer[kv.first] = world.belt(kv.second).dir;
+        auto machineFeeds = [](MachineType t, Dir md, Dir travel) {
+            if (t == MachineType::Splitter) return travel != opposite(md);
+            if (t == MachineType::Storage) return true;   // straight away (the bridge points away)
+            return isOutputSide(t, md, travel);
+        };
+        auto feeds = [&](Vec2i b, Dir d) {   // the ground at b after this placement
+            if (auto it = newBelts.find(b); it != newBelts.end()) return it->second == d;
+            if (auto it = newMachines.find(b); it != newMachines.end()) return machineFeeds(it->second.first, it->second.second, d);
+            TileRef g = world.refAt(b);
+            if (g > 0) return !rmBelts.count(g - 1) && world.belt(g - 1).dir == d;
+            if (g < 0) {
+                if (rmMachines.count(-g - 1)) return false;
+                const Machine& m = world.machine(-g - 1);
+                return machineFeeds(m.type, m.dir, d);
+            }
+            return false;
+        };
+        std::vector<std::pair<Vec2i, Dir>> starts;
+        for (auto& kv : layer) {
+            auto behind = layer.find(kv.first - dirVec(kv.second));
+            if (behind == layer.end() || behind->second != kv.second) starts.push_back(kv);
+        }
+        for (auto& st : starts) {
+            Vec2i s0 = st.first;
+            Dir d = st.second;
+            if (feeds(s0 - dirVec(d), d)) continue;
+            std::vector<Vec2i> run;
+            for (Vec2i p = s0;; p = p + dirVec(d)) {
+                auto it = layer.find(p);
+                if (it == layer.end() || it->second != d || run.size() > 64) break;
+                run.push_back(p);
+            }
+            bool anyRequested = false;
+            for (Vec2i p : run) anyRequested |= requested.count(p) > 0;
+            if (anyRequested) {   // building a bridge that would float: refused
+                for (Vec2i p : run)
+                    if (auto it = requested.find(p); it != requested.end()) plan.each[it->second] = PlaceStatus::Unconnected;
+                unconnected = true;
+                continue;
+            }
+            int first = world.bridgeIdAt(s0);   // existing tiles only
+            if (first >= 0 && world.bridgeSupported(first))   // it stood until now: it goes with what held it
+                for (Vec2i p : run) rmBelts.insert(world.bridgeIdAt(p));
+        }
+    }
     plan.cost = cost;
     plan.removeBelts.assign(rmBelts.begin(), rmBelts.end());
     plan.removeMachines.assign(rmMachines.begin(), rmMachines.end());
     if (outOfReach) { plan.status = PlaceStatus::OutOfReach; return plan; }
     if (blocked) { plan.status = PlaceStatus::Blocked; return plan; }
+    if (tooLong) { plan.status = PlaceStatus::TooLong; return plan; }
+    if (unconnected) { plan.status = PlaceStatus::Unconnected; return plan; }
     if (undiscovered) { plan.status = PlaceStatus::Undiscovered; return plan; }
     if (onWater) { plan.status = PlaceStatus::OnWater; return plan; }
     if (needsWater) { plan.status = PlaceStatus::NeedsWater; return plan; }
@@ -228,6 +341,7 @@ PlacePlan Builder::planPlacement(const std::vector<PlaceRequest>& reqs, bool all
     // simulate on a copy: refunds in, cost out - same order as executePlacement
     for (auto& p : refundTotals(plan.removeBelts, plan.removeMachines)) addAmount(plan.delta, p.first, p.second);
     for (auto& p : refunds) addAmount(plan.delta, p.first, p.second);
+    plan.refund = plan.delta;
     Inventory scratch = player.inventory;
     for (auto& p : plan.delta)
         if (!scratch.tryAdd(p.first, p.second)) { plan.status = PlaceStatus::NoSpace; return plan; }
@@ -278,6 +392,9 @@ std::vector<int> Builder::executePlacement(const std::vector<PlaceRequest>& reqs
             if (id >= 0) {
                 Belt& b = world.belt(id);   // kept: its item stays on it
                 b.dir = r.dir;
+            } else if (r.bridge) {
+                player.inventory.tryRemoveAll(bridgeBuildCost());
+                id = world.addBridge(r.pos, r.dir);
             } else {
                 player.inventory.tryRemoveAll(beltBuildCost());
                 id = world.addBelt(r.pos, r.dir);
@@ -329,7 +446,15 @@ static std::vector<Vec2i> shiftFill(MachineType t, Vec2i tl, Dir dir) {
     return out;
 }
 
-PlaceStatus Builder::checkMachine(MachineType t, Vec2i mouseTile, Dir dir, bool allowReplace, ItemAmounts* cost) const {
+std::vector<int> Builder::bridgesAmong(const std::vector<int>& beltIds) const {
+    std::vector<int> out;
+    for (int id : beltIds)
+        if (world.belt(id).bridge) out.push_back(id);
+    return out;
+}
+
+PlaceStatus Builder::checkMachine(MachineType t, Vec2i mouseTile, Dir dir, bool allowReplace, ItemAmounts* cost, ItemAmounts* refund,
+                                  PlacePlan* planOut) const {
     PlaceRequest r;
     r.type = t;
     r.pos = machineTopLeft(t, mouseTile, dir);
@@ -337,6 +462,8 @@ PlaceStatus Builder::checkMachine(MachineType t, Vec2i mouseTile, Dir dir, bool 
     auto fill = allowReplace ? shiftFill(t, r.pos, dir) : std::vector<Vec2i>{};
     PlacePlan plan = planPlacement({r}, allowReplace, nullptr, false, &fill);
     if (cost) *cost = plan.cost;
+    if (refund) *refund = plan.refund;
+    if (planOut) *planOut = plan;
     return plan.status;
 }
 
@@ -359,13 +486,66 @@ bool Builder::canAffordMachineDeletion(int id) const {
     return applyRefunds(scratch, {}, {id});
 }
 
+// Does machine type t (facing md) push items `travel` onto the tile beside it?
+static bool machinePushes(MachineType t, Dir md, Dir travel) {
+    if (t == MachineType::Splitter) return travel != opposite(md);
+    if (t == MachineType::Storage) return true;   // (only straight away - a bridge points straight away)
+    return isOutputSide(t, md, travel);
+}
+
+std::vector<int> Builder::dependentBridges(const std::vector<int>& belts, const std::vector<int>& machines) const {
+    std::unordered_set<int> gone(belts.begin(), belts.end()), out;
+    std::vector<int> result;
+    auto takeFrom = [&](int id) {   // this bridge tile and the rest of the bridge in front of it
+        Dir d = world.belt(id).dir;
+        for (Vec2i p = world.belt(id).pos;; p = p + dirVec(d)) {
+            int b = world.bridgeIdAt(p);
+            if (b < 0 || world.belt(b).dir != d) break;
+            if (!gone.count(b) && out.insert(b).second) result.push_back(b);
+        }
+    };
+    for (int id : belts) {
+        const Belt& b = world.belt(id);
+        Vec2i q = b.pos + dirVec(b.dir);
+        if (b.bridge) {   // the bridge tiles in front lose their connection
+            int n = world.bridgeIdAt(q);
+            if (n >= 0 && world.belt(n).dir == b.dir) takeFrom(n);
+        } else if (TileRef s = world.bridgeStartRef(q, b.dir)) {   // a belt feeding a bridge
+            takeFrom(s - 1);
+        }
+    }
+    for (int mid : machines) {
+        const Machine& m = world.machine(mid);
+        forEachOutputTile(m, [&](const OutputTile& ot) {
+            if (TileRef s = world.bridgeStartRef(ot.tile, ot.dir); s && machinePushes(m.type, m.dir, ot.dir)) takeFrom(s - 1);
+        });
+    }
+    return result;
+}
+
+bool Builder::canAffordDeletion(const std::vector<int>& belts, const std::vector<int>& machines) const {
+    std::vector<int> all = belts;
+    for (int b : dependentBridges(belts, machines)) all.push_back(b);
+    Inventory scratch = player.inventory;
+    return applyRefunds(scratch, all, machines);
+}
+
+bool Builder::deleteObjects(std::vector<int> belts, const std::vector<int>& machines, ItemAmounts* delta) {
+    for (int b : dependentBridges(belts, machines)) belts.push_back(b);
+    Inventory scratch = player.inventory;
+    if (!applyRefunds(scratch, belts, machines)) return false;   // all or nothing
+    if (delta) *delta = refundTotals(belts, machines);
+    applyRefunds(player.inventory, belts, machines);
+    for (int b : belts) world.removeBelt(b);
+    for (int m : machines) world.removeMachine(m);
+    world.markTopologyDirty();
+    return true;
+}
+
 bool Builder::deleteMachineAt(Vec2i t, ItemAmounts* delta) {
     int id = world.machineIdAt(t);
-    if (id < 0 || !canAffordMachineDeletion(id)) return false;
-    if (delta) *delta = refundTotals({}, {id});
-    applyRefunds(player.inventory, {}, {id});
-    world.removeMachine(id);
-    return true;
+    if (id < 0) return false;
+    return deleteObjects({}, {id}, delta);
 }
 
 bool Builder::setRecipe(Machine& m, const Recipe* r) {
@@ -404,16 +584,51 @@ Builder::TakeResult Builder::takeContents(Machine& m, ItemAmounts* got) {
     return moved.empty() ? TakeResult::NoSpace : TakeResult::Ok;
 }
 
-bool Builder::turnAt(Vec2i t, int steps) {
-    if (int id = world.beltIdAt(t); id >= 0) {
-        world.noteChangedBelt(id);       // before changing it (undo)
-        world.belt(id).dir = rotateCW(world.belt(id).dir, steps);   // its item stays on it
-    } else if (int mid = world.machineIdAt(t); mid >= 0 && machineDirMatters(world.machine(mid).type)) {
-        world.noteChangedMachine(mid);
-        world.machine(mid).dir = rotateCW(world.machine(mid).dir, steps);
-    } else {
-        return false;   // nothing there, or a miner / chest
-    }
+std::unordered_set<Vec2i, Vec2iHash> Builder::supportedBridges() const {
+    std::unordered_set<Vec2i, Vec2iHash> out;
+    for (auto& kv : world.bridges())
+        if (world.bridgeSupported(kv.second)) out.insert(kv.first);
+    return out;
+}
+
+bool Builder::removeNewlyFloating(const std::unordered_set<Vec2i, Vec2iHash>& before, ItemAmounts* got, bool dryRun) {
+    std::vector<int> ids;
+    for (auto& kv : world.bridges())
+        if (before.count(kv.first) && !world.bridgeSupported(kv.second)) ids.push_back(kv.second);
+    if (got) got->clear();
+    if (ids.empty()) return true;
+    Inventory scratch = player.inventory;
+    if (!applyRefunds(scratch, ids, {})) return false;
+    if (dryRun) return true;
+    if (got) *got = refundTotals(ids, {});
+    applyRefunds(player.inventory, ids, {});
+    for (int id : ids) world.removeBelt(id);
+    world.markTopologyDirty();
+    return true;
+}
+
+bool Builder::turnAt(Vec2i t, int steps, bool* noSpace, ItemAmounts* got) {
+    if (noSpace) *noSpace = false;
+    if (got) got->clear();
+    auto before = supportedBridges();
+    int id = world.beltIdAt(t), mid = world.machineIdAt(t);
+    Dir old;
+    if (id >= 0) old = world.belt(id).dir;
+    else if (mid >= 0 && machineDirMatters(world.machine(mid).type)) old = world.machine(mid).dir;
+    else return false;   // nothing there, or a miner / chest
+    auto setDir = [&](Dir d) {
+        if (id >= 0) world.belt(id).dir = d;   // its item stays on it
+        else world.machine(mid).dir = d;
+    };
+    // try it: a bridge it fed must not stay in the air
+    setDir(rotateCW(old, steps));
+    bool ok = removeNewlyFloating(before, nullptr, true);
+    setDir(old);
+    if (!ok) { if (noSpace) *noSpace = true; return false; }
+    if (id >= 0) world.noteChangedBelt(id);       // before changing it (undo)
+    else world.noteChangedMachine(mid);
+    setDir(rotateCW(old, steps));
+    removeNewlyFloating(before, got);
     world.markTopologyDirty();
     return true;
 }
@@ -503,6 +718,67 @@ Builder::TakeResult Builder::pickUpUnderPlayer(ItemAmounts* got) {
     if (got) *got = moved;
     if (!any) return TakeResult::Nothing;
     return moved.empty() ? TakeResult::NoSpace : TakeResult::Ok;
+}
+
+// ---------------------------------------------------------------------------
+// Bridges
+// ---------------------------------------------------------------------------
+std::vector<BeltPlan> Builder::planBridge(Vec2i start, Vec2i end, Dir dir) {
+    Vec2i d = end - start;
+    int n = 1;
+    if (d.x != 0 || d.y != 0) {
+        if (std::abs(d.x) >= std::abs(d.y)) { dir = d.x > 0 ? Dir::Right : Dir::Left; n = std::abs(d.x) + 1; }
+        else { dir = d.y > 0 ? Dir::Down : Dir::Up; n = std::abs(d.y) + 1; }
+    }
+    n = std::min(n, BRIDGE_MAX_LENGTH);
+    std::vector<BeltPlan> plan;
+    for (int i = 0; i < n; ++i) plan.push_back({start + dirVec(dir) * i, dir, std::nullopt});
+    return plan;
+}
+
+static std::vector<PlaceRequest> bridgeRequests(const std::vector<BeltPlan>& plan) {
+    std::vector<PlaceRequest> reqs;
+    for (auto& p : plan) {
+        PlaceRequest r;
+        r.belt = r.bridge = true;
+        r.pos = p.pos;
+        r.dir = p.dir;
+        reqs.push_back(r);
+    }
+    return reqs;
+}
+
+PlacePlan Builder::checkBridge(const std::vector<BeltPlan>& plan, bool allowReplace) const {
+    return planPlacement(bridgeRequests(plan), allowReplace);
+}
+
+bool Builder::placeBridge(const std::vector<BeltPlan>& plan, bool allowReplace, ItemAmounts* delta) {
+    if (plan.empty()) return false;
+    auto reqs = bridgeRequests(plan);
+    PlacePlan pp = planPlacement(reqs, allowReplace);
+    if (pp.status != PlaceStatus::Ok) return false;
+    if (delta) *delta = pp.delta;
+    executePlacement(reqs, pp);
+    return true;
+}
+
+std::vector<int> Builder::bridgeRun(int id) const {
+    const Belt& b = world.belt(id);
+    std::vector<int> run{id};
+    for (int s = -1; s <= 1; s += 2)
+        for (Vec2i p = b.pos + dirVec(b.dir) * s;; p = p + dirVec(b.dir) * s) {
+            int o = world.bridgeIdAt(p);
+            if (o < 0 || world.belt(o).dir != b.dir) break;
+            run.push_back(o);
+        }
+    return run;
+}
+
+bool Builder::deleteBridgeAt(Vec2i t, bool whole, ItemAmounts* delta) {
+    int id = world.bridgeIdAt(t);
+    if (id < 0) return false;
+    std::vector<int> ids = whole ? bridgeRun(id) : std::vector<int>{id};
+    return deleteObjects(ids, {}, delta);   // (with the rest of the bridge in front of it)
 }
 
 // ---------------------------------------------------------------------------
@@ -613,10 +889,13 @@ static std::vector<PlaceRequest> beltRequests(const std::vector<BeltPlan>& plan)
     return reqs;
 }
 
-PlaceStatus Builder::beltAffordability(const std::vector<BeltPlan>& plan, ItemAmounts* cost) const {
+PlaceStatus Builder::beltAffordability(const std::vector<BeltPlan>& plan, ItemAmounts* cost, ItemAmounts* refund,
+                                       PlacePlan* planOut) const {
     // blocking is checked separately (drag rules); here only items matter
     PlacePlan pp = planPlacement(beltRequests(plan), true);
     if (cost) *cost = pp.cost;
+    if (refund) *refund = pp.refund;
+    if (planOut) *planOut = pp;
     PlaceStatus st = pp.status;
     return (st == PlaceStatus::NoSpace || st == PlaceStatus::NoFunds) ? st : PlaceStatus::Ok;
 }
@@ -682,11 +961,7 @@ bool Builder::deleteBeltAt(Vec2i t, bool whole, ItemAmounts* delta) {
     int id = world.beltIdAt(t);
     if (id < 0) return false;
     std::vector<int> ids = whole ? connectedBelts(id) : std::vector<int>{id};
-    if (!canAffordBeltDeletion(ids)) return false;
-    if (delta) *delta = refundTotals(ids, {});
-    applyRefunds(player.inventory, ids, {});
-    for (int b : ids) world.removeBelt(b);
-    return true;
+    return deleteObjects(ids, {}, delta);   // (with the bridges it fed)
 }
 
 // ---------------------------------------------------------------------------
@@ -697,6 +972,7 @@ static std::vector<PlaceRequest> blueprintRequests(const Blueprint& bp, Vec2i tl
     for (auto& b : bp.belts) {
         PlaceRequest r;
         r.belt = true;
+        r.bridge = b.bridge;
         r.pos = tl + b.off;
         r.dir = b.dir;
         r.setFilters = true;
@@ -729,6 +1005,9 @@ Builder::BlueprintCheck Builder::checkBlueprint(const Blueprint& bp, Vec2i tl, b
     BlueprintCheck c;
     c.status = plan.status;
     c.cost = plan.cost;
+    c.refund = plan.refund;
+    c.removeBelts = plan.removeBelts;
+    c.removeMachines = plan.removeMachines;
     c.belts.assign(plan.each.begin(), plan.each.begin() + long(bp.belts.size()));
     c.machines.assign(plan.each.begin() + long(bp.belts.size()), plan.each.end());
     return c;
@@ -751,7 +1030,7 @@ bool Builder::placeBlueprint(const Blueprint& bp, Vec2i tl, bool allowReplace, I
 // What one belt / machine is worth: build cost + what is inside.
 static ItemAmounts snapValue(const ObjSnap& s) {
     if (!s.belt) return s.machine->refundItems();
-    ItemAmounts v = beltBuildCost();
+    ItemAmounts v = beltCost(s.bridge);
     if (s.beltState.item != NO_ITEM) addAmount(v, s.beltState.item, 1);
     return v;
 }
@@ -763,7 +1042,7 @@ Builder::UndoResult Builder::undo(const UndoRecord& rec, ItemAmounts* delta, Und
     std::unordered_set<int> beltSet, machineSet;
     for (const ObjSnap& a : rec.added) {
         if (a.belt) {
-            int id = world.beltIdAt(a.pos);
+            int id = a.bridge ? world.bridgeIdAt(a.pos) : world.beltIdAt(a.pos);
             if (id < 0) return UndoResult::Changed;
             if (beltSet.insert(id).second) belts.push_back(id);
         } else {
@@ -773,8 +1052,8 @@ Builder::UndoResult Builder::undo(const UndoRecord& rec, ItemAmounts* delta, Und
         }
     }
     // 2. the old things must fit where they were (what step 1 removes is free)
-    std::unordered_set<Vec2i, Vec2iHash> freed;
-    for (int id : belts) freed.insert(world.belt(id).pos);
+    std::unordered_set<Vec2i, Vec2iHash> freed, freedBridges;   // ground / bridge layer
+    for (int id : belts) (world.belt(id).bridge ? freedBridges : freed).insert(world.belt(id).pos);
     for (int id : machines) {
         const Machine& m = world.machine(id);
         for (Vec2i c : footprint(m.pos, m.w, m.h)) freed.insert(c);
@@ -788,12 +1067,23 @@ Builder::UndoResult Builder::undo(const UndoRecord& rec, ItemAmounts* delta, Und
     }
     for (Vec2i t : rec.landfillRemoved)
         if (!world.isWater(t)) return UndoResult::Changed;
-    std::unordered_set<Vec2i, Vec2iHash> taken;
+    std::unordered_set<Vec2i, Vec2iHash> taken, takenBridges, takenMachines;
     for (const ObjSnap& s : rec.removed) {
+        if (s.belt && s.bridge) {   // bridge layer: free there, and no machine under it
+            Vec2i c = s.pos;
+            if ((world.bridgeIdAt(c) >= 0 && !freedBridges.count(c)) || !takenBridges.insert(c).second || takenMachines.count(c))
+                return UndoResult::Blocked;
+            if (world.machineIdAt(c) >= 0 && !freed.count(c)) return UndoResult::Blocked;
+            continue;
+        }
         int w = s.belt ? 1 : s.machine->w, h = s.belt ? 1 : s.machine->h;
         for (Vec2i c : footprint(s.pos, w, h)) {
             if ((world.isCellBlocked(c) && !freed.count(c)) || !taken.insert(c).second) return UndoResult::Blocked;
             if (isBlockedByPlayer(c)) return UndoResult::PlayerInTheWay;
+            if (!s.belt) {   // a machine can't go under a bridge
+                if ((world.bridgeIdAt(c) >= 0 && !freedBridges.count(c)) || takenBridges.count(c)) return UndoResult::Blocked;
+                takenMachines.insert(c);
+            }
         }
     }
     // 3. items: get back what the added things are worth now, pay what the
@@ -816,6 +1106,9 @@ Builder::UndoResult Builder::undo(const UndoRecord& rec, ItemAmounts* delta, Und
     for (auto& p : get)
         if (!scratch.tryAdd(p.first, p.second)) return UndoResult::NoSpace;
     // 4. do it, recording what this does: that is exactly how to redo it
+    auto supportedBefore = supportedBridges();
+    std::unordered_set<Vec2i, Vec2iHash> hadBridge;
+    for (auto& kv : world.bridges()) hadBridge.insert(kv.first);
     bool rec0 = world.recordChanges;
     world.takeRecord();   // (the caller hands over anything pending first)
     world.recordChanges = true;
@@ -827,7 +1120,7 @@ Builder::UndoResult Builder::undo(const UndoRecord& rec, ItemAmounts* delta, Und
     for (const ObjSnap& s : rec.removed) {
         if (s.belt) {
             const Belt& old = s.beltState;
-            int id = world.addBelt(old.pos, old.dir);
+            int id = old.bridge ? world.addBridge(old.pos, old.dir) : world.addBelt(old.pos, old.dir);
             Belt& b = world.belt(id);
             b.filter = old.filter;
             b.item = old.item;
@@ -842,6 +1135,22 @@ Builder::UndoResult Builder::undo(const UndoRecord& rec, ItemAmounts* delta, Und
             world.addMachine(std::move(m));
         }
     }
+    // 5. bridges can't float: one it brought back without support -> take it
+    //    all back; ones it leaves without support go too (refunded)
+    UndoResult fail = UndoResult::Ok;
+    for (auto& kv : world.bridges())
+        if (!hadBridge.count(kv.first) && !world.bridgeSupported(kv.second)) fail = UndoResult::Floating;
+    ItemAmounts extra;
+    if (fail == UndoResult::Ok && !removeNewlyFloating(supportedBefore, &extra)) fail = UndoResult::NoSpace;
+    if (fail != UndoResult::Ok) {
+        UndoRecord partial = world.takeRecord();
+        world.recordChanges = rec0;
+        undo(partial);   // exactly back to how it was
+        world.markTopologyDirty();
+        world.ensureTopology();
+        return fail;
+    }
+    for (auto& p : extra) addAmount(net, p.first, p.second);
     UndoRecord inv = world.takeRecord();
     if (inverse) *inverse = std::move(inv);
     world.recordChanges = rec0;
@@ -854,9 +1163,9 @@ Builder::UndoResult Builder::undo(const UndoRecord& rec, ItemAmounts* delta, Und
 // ---------------------------------------------------------------------------
 // Area delete
 // ---------------------------------------------------------------------------
-Builder::AreaDelete Builder::deleteArea(Vec2i a, Vec2i b, ItemAmounts* refunded, int* removed) {
-    // same rules as Copy area: belts / machines if there are any, otherwise landfill
-    SelectionContent sc = gatherContent(world, makeSelection(a, b), SelectRule::ObjectsFirst);
+Builder::AreaDelete Builder::deleteArea(Vec2i a, Vec2i b, ItemAmounts* refunded, int* removed, Layers layers) {
+    // same rules as Copy area: things (belts, bridges, machines) if there are any, otherwise landfill
+    SelectionContent sc = gatherContent(world, makeSelection(a, b), SelectRule::ObjectsFirst, layers);
     if (sc.empty()) return AreaDelete::Nothing;
 
     if (!sc.landfill.empty()) {   // (then there are no belts / machines)
@@ -870,7 +1179,9 @@ Builder::AreaDelete Builder::deleteArea(Vec2i a, Vec2i b, ItemAmounts* refunded,
         return AreaDelete::Ok;
     }
 
-    const std::vector<int>& belts = sc.belts;
+    std::vector<int> belts = sc.belts;   // (bridges are belts too)
+    belts.insert(belts.end(), sc.bridges.begin(), sc.bridges.end());
+    for (int b : dependentBridges(belts, sc.machines)) belts.push_back(b);   // bridges that would float
     const std::vector<int>& machines = sc.machines;
     Inventory scratch = player.inventory;
     if (!applyRefunds(scratch, belts, machines)) return AreaDelete::NoSpace;

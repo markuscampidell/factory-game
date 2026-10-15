@@ -1,6 +1,7 @@
 // game/GameDraw.cpp - drawing the world, build previews and the HUD.
 #include "GameScreen.hpp"
 #include "Assets.hpp"
+#include "rlgl.h"   // rlSetBlendFactors (drawHiddenUnderSprite) - after raylib.h
 #include <algorithm>
 #include <cstdio>
 #include <ctime>
@@ -56,6 +57,7 @@ void GameScreen::draw() {
     c2d.zoom = cam_.zoom;
     // at 100% snap to whole pixels so the pixel art stays crisp
     c2d.target = cam_.zoom == 1.0f ? Vector2{std::floor(cam_.x), std::floor(cam_.y)} : Vector2{cam_.x, cam_.y};
+    cam2d_ = c2d;   // (drawHiddenUnderSprite leaves and re-enters it)
     BeginMode2D(c2d);
     if (mapMode()) {
         drawMapView();
@@ -65,6 +67,8 @@ void GameScreen::draw() {
         drawGrid();
         drawBelts();
         drawItems();
+        drawBridges();   // one level up - but under machines (they never overlap), so items
+                         // coming out of / going into a machine slide under its sprite
         drawMachines();
         drawPlayer();
         drawHoverHighlight();
@@ -98,6 +102,7 @@ void GameScreen::draw() {
     text("Player position: x:" + std::to_string(int(player_.rect.cx())) + " y:" + std::to_string(int(player_.rect.cy())), 10, 35, 20, hud);
     text("FPS: " + std::to_string(int(fps_)), 10, 60, 20, hud);
     text("Zoom: " + std::to_string(int(std::lround(cam_.zoom * 100))) + "%" + (mapMode() ? "  (map view - P: place a marker)" : ""), 10, 85, 20, hud);
+    text(std::string("Layer: ") + layerName(layer_) + "  (L)", 10, 110, 20, layer_ == Layers::All ? hud : Color{170, 20, 20, 255});
 
     if (markerPlacing_) {   // the marker you hold, and how to place it
         Vector2 m = ui::mouse();
@@ -113,7 +118,7 @@ void GameScreen::draw() {
     drawModals(dt);
     // notifications on top of everything ("Saved as ..." over the Game Menu)
     if (toastTime_ > 0 && !toast_.empty()) {
-        Vector2 m = measure(toast_, 20);
+        Vector2 m = measure(toast_, 20, true);   // (drawn bold)
         Rectangle r = centeredRect(ui::screenW() / 2, 70, m.x + 30, m.y + 16);
         unsigned char a = (unsigned char)(std::min(1.0f, toastTime_) * 230);
         fillRound(r, 10, Color{ui::PANEL_BG.r, ui::PANEL_BG.g, ui::PANEL_BG.b, a});
@@ -145,6 +150,38 @@ void GameScreen::drawTerrain() {
             Vector2 p = toScreen(float(x * CELL_SIZE), float(y * CELL_SIZE));
             drawItemIcon(ore, {p.x + (CELL_SIZE - icon) / 2, p.y + (CELL_SIZE - icon) / 2, icon, icon});
         }
+}
+
+// One tile of bare terrain (ground / water / landfill / ore) with its grid
+// lines - drawn over things to hide them.
+void GameScreen::drawTerrainTile(Vec2i t) {
+    Rectangle r{float(t.x * CELL_SIZE), float(t.y * CELL_SIZE), CELL_SIZE, CELL_SIZE};
+    if (world_.isWater(t)) DrawRectangleRec(r, WATER);
+    else if (world_.isLandfill(t)) DrawRectangleRec(r, LANDFILL);
+    else {
+        DrawRectangleRec(r, GROUND);
+        if (ItemId ore = world_.oreAt(t); ore != NO_ITEM) {
+            float icon = CELL_SIZE * 0.7f;
+            drawItemIcon(ore, {r.x + (CELL_SIZE - icon) / 2, r.y + (CELL_SIZE - icon) / 2, icon, icon});
+        }
+    }
+    if (mode_ != BuildMode::None) {
+        float thin = 1.0f / cam_.zoom;
+        DrawRectangleRec({r.x, r.y, thin, r.height}, GRID_COLOR);
+        DrawRectangleRec({r.x, r.y, r.width, thin}, GRID_COLOR);
+    }
+}
+
+// The item on a belt / bridge, sliding in from where it came.
+void GameScreen::drawBeltItem(const Belt& b, unsigned char alpha) {
+    if (b.item == NO_ITEM) return;
+    const float size = CELL_SIZE * 0.5f, T = float(BELT_TICKS_PER_TILE);
+    float p = b.progress < BELT_TICKS_PER_TILE ? (float(b.progress) + interp_) : T;
+    p = std::min(p, T) / T;
+    Vec2i v = dirVec(b.itemFrom);
+    float ex = float(b.pos.x * CELL_SIZE + CELL_SIZE / 2), ey = float(b.pos.y * CELL_SIZE + CELL_SIZE / 2);
+    float sx = ex - float(v.x * CELL_SIZE), sy = ey - float(v.y * CELL_SIZE);
+    drawItemIcon(b.item, {sx + (ex - sx) * p - size / 2, sy + (ey - sy) * p - size / 2, size, size}, alpha);
 }
 
 void GameScreen::drawGrid() {
@@ -203,8 +240,9 @@ const Texture2D* GameScreen::mapChunkTexture(int cx, int cy) {
     auto it = mapChunks_.find(key);
     if (it != mapChunks_.end() && it->second.version == version && it->second.explored == explored) return &it->second.tex;
 
-    // terrain (black where unexplored), belts grey, machines in their colour
-    const Color beltColor{150, 150, 150, 255};
+    // terrain (black where unexplored), belts grey, machines in their colour, bridges on top
+    const Color beltColor{150, 150, 150, 255}, bridgeColor{210, 185, 125, 255};
+    const bool anyBridges = !world_.bridges().empty();
     Color px[CHUNK_SIZE * CHUNK_SIZE];
     for (int y = 0; y < CHUNK_SIZE; ++y)
         for (int x = 0; x < CHUNK_SIZE; ++x) {
@@ -214,6 +252,7 @@ const Texture2D* GameScreen::mapChunkTexture(int cx, int cy) {
             else if (r < 0) px[i] = machineMapColor(world_.machine(-r - 1).type);
             else if (world_.isLandfill({cx * CHUNK_SIZE + x, cy * CHUNK_SIZE + y})) px[i] = LANDFILL;
             else px[i] = explored ? oreMapColor(world_.tileType({cx * CHUNK_SIZE + x, cy * CHUNK_SIZE + y})) : BLACK;
+            if (anyBridges && world_.bridgeIdAt({cx * CHUNK_SIZE + x, cy * CHUNK_SIZE + y}) >= 0) px[i] = bridgeColor;
         }
     if (it != mapChunks_.end()) {
         UpdateTexture(it->second.tex, px);   // same size: just new pixels
@@ -350,18 +389,87 @@ void GameScreen::drawMinimap() {
     if (hovered(r)) DrawRectangleLinesEx(r, 2, Color{255, 255, 255, 200});
 }
 
+void drawBridgeSprite(Rectangle r, Dir d, unsigned char alpha, bool start, bool end, const Color* overlay) {
+    // drawn in "travel space": u along the bridge (0 = where items come in),
+    // v across it, both 0..1, then turned to `d`
+    auto at = [&](float u, float v) -> Vector2 {
+        switch (d) {
+            case Dir::Right: return {r.x + u * r.width, r.y + v * r.height};
+            case Dir::Down: return {r.x + (1 - v) * r.width, r.y + u * r.height};
+            case Dir::Left: return {r.x + (1 - u) * r.width, r.y + (1 - v) * r.height};
+            default: return {r.x + v * r.width, r.y + (1 - u) * r.height};   // Up
+        }
+    };
+    auto box = [&](float u0, float v0, float u1, float v1, Color c, float a) {
+        Vector2 p = at(u0, v0), q = at(u1, v1);
+        if (overlay) { c = *overlay; a = std::sqrt(a) * float(overlay->a) / 255.0f; }   // (faint parts get a faint tint)
+        c.a = (unsigned char)(float(alpha) * a);
+        DrawRectangleRec({std::min(p.x, q.x), std::min(p.y, q.y), std::fabs(q.x - p.x), std::fabs(q.y - p.y)}, c);
+    };
+    const Color steel{170, 175, 185, 255}, wood{120, 92, 62, 255}, rail{58, 46, 36, 255};
+    box(0, 0.12f, 1, 0.88f, steel, 0.14f);                        // deck: you see through it
+    for (float u = 0.0625f; u < 1; u += 0.25f) box(u, 0.12f, u + 0.06f, 0.88f, wood, 0.32f);   // planks
+    box(0, 0.02f, 1, 0.13f, rail, 0.9f);                           // rails (the solid parts)
+    box(0, 0.87f, 1, 0.98f, rail, 0.9f);
+    for (float u : {0.0f, 0.5f}) {                                 // posts
+        box(u, 0, u + 0.09f, 0.15f, rail, 1.0f);
+        box(u, 0.85f, u + 0.09f, 1, rail, 1.0f);
+    }
+    if (start) box(0, 0.13f, 0.07f, 0.87f, rail, 0.7f);           // ramps at the ends
+    if (end) box(0.93f, 0.13f, 1, 0.87f, rail, 0.7f);
+    if (overlay) return;   // (no tint on the arrow)
+    Color arrow{255, 255, 255, (unsigned char)(float(alpha) * 0.45f)};
+    float th = std::max(1.5f, r.width * 0.06f);
+    DrawLineEx(at(0.4f, 0.32f), at(0.6f, 0.5f), th, arrow);        // direction
+    DrawLineEx(at(0.6f, 0.5f), at(0.4f, 0.68f), th, arrow);
+}
+
 void GameScreen::drawBelts() {
     world_.ensureTopology();
     int l, t, r, b;
     cam_.visibleTiles(l, t, r, b);
+    const Color tint{255, 255, 255, fadeGround() ? (unsigned char)77 : (unsigned char)255};   // top layer: ground faded
     for (int y = t; y < b; ++y)
         for (int x = l; x < r; ++x) {
             int id = world_.beltIdAt({x, y});
             if (id < 0) continue;
             const Belt& belt = world_.belt(id);
             Vector2 p = toScreen(float(x * CELL_SIZE), float(y * CELL_SIZE));
-            drawTexture(assets::belt(belt.incomingMask, belt.dir), {p.x, p.y, CELL_SIZE, CELL_SIZE});
+            drawTexture(assets::belt(belt.incomingMask, belt.dir), {p.x, p.y, CELL_SIZE, CELL_SIZE}, tint);
             if (belt.filter.enabled) drawFilterBadge(p.x + CELL_SIZE - 8, p.y + 8, 10);
+        }
+}
+
+// The bridge layer, above belts (machines are drawn after it, but nothing
+// stands under a bridge), with the items on it. Faded
+// while deleting on the ground layer.
+void GameScreen::drawBridges() {
+    if (world_.bridges().empty()) return;
+    int l, t, r, b;
+    cam_.visibleTiles(l, t, r, b);
+    const unsigned char a = fadeBridges() ? 77 : 255;
+    const float size = CELL_SIZE * 0.5f, T = float(BELT_TICKS_PER_TILE);
+    auto same = [&](Vec2i p, Dir d) { int o = world_.bridgeIdAt(p); return o >= 0 && world_.belt(o).dir == d; };
+    for (int y = t - 1; y < b + 1; ++y)
+        for (int x = l - 1; x < r + 1; ++x) {
+            int id = world_.bridgeIdAt({x, y});
+            if (id < 0) continue;
+            const Belt& br = world_.belt(id);
+            Rectangle rc{float(x * CELL_SIZE), float(y * CELL_SIZE), CELL_SIZE, CELL_SIZE};
+            drawBridgeSprite(rc, br.dir, a, !same(br.pos - dirVec(br.dir), br.dir), !same(br.pos + dirVec(br.dir), br.dir));
+            if (br.filter.enabled) drawFilterBadge(rc.x + CELL_SIZE - 8, rc.y + 8, 10);
+        }
+    for (int y = t - 1; y < b + 1; ++y)   // items on top (as on belts: sliding in from where they came)
+        for (int x = l - 1; x < r + 1; ++x) {
+            int id = world_.bridgeIdAt({x, y});
+            if (id < 0 || world_.belt(id).item == NO_ITEM) continue;
+            const Belt& br = world_.belt(id);
+            float p = br.progress < BELT_TICKS_PER_TILE ? (float(br.progress) + interp_) : T;
+            p = std::min(p, T) / T;
+            Vec2i v = dirVec(br.itemFrom);
+            float ex = float(x * CELL_SIZE + CELL_SIZE / 2), ey = float(y * CELL_SIZE + CELL_SIZE / 2);
+            float sx = ex - float(v.x * CELL_SIZE), sy = ey - float(v.y * CELL_SIZE);
+            drawItemIcon(br.item, {sx + (ex - sx) * p - size / 2, sy + (ey - sy) * p - size / 2, size, size}, a);
         }
 }
 
@@ -370,6 +478,7 @@ void GameScreen::drawItems() {
     cam_.visibleTiles(l, t, r, b);
     const float size = CELL_SIZE * 0.5f;
     const float T = float(BELT_TICKS_PER_TILE);
+    const unsigned char groundA = fadeGround() ? 77 : 255;
     auto drawOnTile = [&](ItemId item, Vec2i tile, int progress, Dir from) {
         float p = progress < BELT_TICKS_PER_TILE ? (float(progress) + interp_) : T;
         p = std::min(p, T) / T;
@@ -377,7 +486,7 @@ void GameScreen::drawItems() {
         float ex = float(tile.x * CELL_SIZE + CELL_SIZE / 2), ey = float(tile.y * CELL_SIZE + CELL_SIZE / 2);
         float sx = ex - float(v.x * CELL_SIZE), sy = ey - float(v.y * CELL_SIZE);
         Vector2 s = toScreen(sx + (ex - sx) * p, sy + (ey - sy) * p);
-        drawItemIcon(item, {s.x - size / 2, s.y - size / 2, size, size});
+        drawItemIcon(item, {s.x - size / 2, s.y - size / 2, size, size}, groundA);
     };
     std::unordered_set<int> seen;
     for (int y = t - 1; y < b + 1; ++y)
@@ -392,7 +501,7 @@ void GameScreen::drawItems() {
                 for (const InputAnim& a : m.anims) {
                     float p = std::min(1.0f, (float(a.ticks) + interp_) / float(a.duration));
                     Vector2 s = toScreen(a.sx + (a.ex - a.sx) * p, a.sy + (a.ey - a.sy) * p);
-                    drawItemIcon(a.item, {s.x - size / 2, s.y - size / 2, size, size});
+                    drawItemIcon(a.item, {s.x - size / 2, s.y - size / 2, size, size}, groundA);
                 }
             }
         }
@@ -402,6 +511,7 @@ void GameScreen::drawMachines() {
     int l, t, r, b;
     cam_.visibleTiles(l, t, r, b);
     const bool buildingNow = mode_ == BuildMode::Building || bpMode_ == BpMode::Placing;
+    const unsigned char groundA = fadeGround() ? 77 : 255;   // top layer: ground faded
     std::unordered_set<int> seen;
     for (int y = t - 3; y < b + 3; ++y)
         for (int x = l - 3; x < r + 3; ++x) {
@@ -410,7 +520,7 @@ void GameScreen::drawMachines() {
             const Machine& m = world_.machine(id);
             Vector2 p = toScreen(float(m.pos.x * CELL_SIZE), float(m.pos.y * CELL_SIZE));
             Rectangle dest{p.x, p.y, float(m.w * CELL_SIZE), float(m.h * CELL_SIZE)};
-            assets::drawMachine(m.type, m.dir, dest);
+            assets::drawMachine(m.type, m.dir, dest, Color{255, 255, 255, groundA});
             // output sides: while building, and on the machine under the mouse
             if (hasSideArrows(m.type) && (buildingNow || hovered_ == -(id + 1))) drawOutputSideArrows(m.type, m.dir, dest);
             float cx = dest.x + dest.width / 2, cy = dest.y + dest.height / 2;
@@ -422,7 +532,7 @@ void GameScreen::drawMachines() {
                 float total = float(m.recipe->outputs.size()) * s + spacing * float(m.recipe->outputs.size() - 1);
                 float xx = cx - std::floor(total / 2);
                 for (auto& o : m.recipe->outputs) {
-                    drawItemIcon(o.first, {xx, cy - s / 2, s, s});
+                    drawItemIcon(o.first, {xx, cy - s / 2, s, s}, groundA);
                     xx += s + spacing;
                 }
             } else if (m.isStorage()) {
@@ -430,7 +540,7 @@ void GameScreen::drawMachines() {
                 ItemAmounts c = m.storage.contents();
                 if (!c.empty()) {
                     auto best = std::max_element(c.begin(), c.end(), [](auto& a, auto& bb) { return a.second < bb.second; });
-                    drawItemIcon(best->first, {cx - 16, cy - 16, 32, 32});
+                    drawItemIcon(best->first, {cx - 16, cy - 16, 32, 32}, groundA);
                 }
             } else if (m.isSplitter()) {
                 for (int i = 0; i < 3; ++i) {
@@ -455,13 +565,11 @@ void GameScreen::drawHoverHighlight() {
     }
     if (hovered_ == 0) return;
     if (hovered_ > 0) {
-        const Belt& b = world_.belt(hovered_ - 1);
-        Vector2 p = toScreen(float(b.pos.x * CELL_SIZE), float(b.pos.y * CELL_SIZE));
-        DrawRectangleRec({p.x, p.y, CELL_SIZE, CELL_SIZE}, c);
+        overlayBelt(world_.belt(hovered_ - 1), c);   // (a belt or a bridge: only on its pixels)
     } else {
         const Machine& m = world_.machine(-hovered_ - 1);
         Vector2 p = toScreen(float(m.pos.x * CELL_SIZE), float(m.pos.y * CELL_SIZE));
-        DrawRectangleRec({p.x, p.y, float(m.w * CELL_SIZE), float(m.h * CELL_SIZE)}, c);
+        overlayMachine(m.type, m.dir, {p.x, p.y, float(m.w * CELL_SIZE), float(m.h * CELL_SIZE)}, c);
     }
 }
 
@@ -472,13 +580,14 @@ void GameScreen::drawGhostBelt(Vec2i tile, uint8_t mask, Dir out, Color overlay,
     Vector2 p = toScreen(float(tile.x * CELL_SIZE), float(tile.y * CELL_SIZE));
     Rectangle r{p.x, p.y, CELL_SIZE, CELL_SIZE};
     drawTexture(assets::belt(mask, out), r, Color{255, 255, 255, 160});
-    if (hasOverlay) DrawRectangleRec(r, overlay);
+    if (hasOverlay) overlayBeltSprite(mask, out, r, overlay);
 }
 
 void GameScreen::drawBuildMode() {
     if (bpMode_ != BpMode::None) { drawBlueprintMode(); return; }
     if (mode_ == BuildMode::Building) {
         if (selected_ == Buildable::Belt) { drawOutputArrows(); drawGhostBelts(); }
+        else if (selected_ == Buildable::Bridge) drawGhostBridge();
         else if (selected_ == Buildable::Landfill) drawGhostLandfill();
         else drawGhostMachine();
     } else if (mode_ == BuildMode::Deleting) {
@@ -527,14 +636,182 @@ void GameScreen::drawPumpShore(Vec2i around) {
         }
 }
 
+// ---------------------------------------------------------------------------
+// Overlays only on a sprite's own pixels (see GameScreen.hpp)
+// ---------------------------------------------------------------------------
+namespace {
+// the overlay colour (tint), with the sprite's alpha
+#if defined(__EMSCRIPTEN__)
+const char* OVERLAY_FS = R"(#version 100
+precision mediump float;
+varying vec2 fragTexCoord;
+varying vec4 fragColor;
+uniform sampler2D texture0;
+uniform vec4 colDiffuse;
+void main() {
+    float a = texture2D(texture0, fragTexCoord).a;
+    gl_FragColor = vec4(fragColor.rgb * colDiffuse.rgb, fragColor.a * colDiffuse.a * a);
+}
+)";
+#else
+const char* OVERLAY_FS = R"(#version 330
+in vec2 fragTexCoord;
+in vec4 fragColor;
+uniform sampler2D texture0;
+uniform vec4 colDiffuse;
+out vec4 finalColor;
+void main() {
+    float a = texture(texture0, fragTexCoord).a;
+    finalColor = vec4(fragColor.rgb * colDiffuse.rgb, fragColor.a * colDiffuse.a * a);
+}
+)";
+#endif
+} // namespace
+
+void GameScreen::overlayBegin() {
+    if (!overlayLoaded_) {
+        overlayLoaded_ = true;
+        overlayShader_ = LoadShaderFromMemory(nullptr, OVERLAY_FS);
+        overlayOk_ = overlayShader_.id != 0 && overlayShader_.id != rlGetShaderIdDefault();
+    }
+    if (overlayDepth_++ == 0 && overlayOk_) BeginShaderMode(overlayShader_);
+}
+
+void GameScreen::overlayEnd() {
+    if (overlayDepth_ > 0 && --overlayDepth_ == 0 && overlayOk_) EndShaderMode();
+}
+
+void GameScreen::overlayBeltSprite(uint8_t mask, Dir d, Rectangle r, Color c) {
+    overlayBegin();
+    if (overlayOk_) drawTexture(assets::belt(mask, d), r, c);
+    else DrawRectangleRec(r, c);   // (no shader: the whole tile)
+    overlayEnd();
+}
+
+void GameScreen::overlayMachine(MachineType t, Dir d, Rectangle r, Color c) {
+    overlayBegin();
+    if (overlayOk_) assets::drawMachine(t, d, r, c);
+    else DrawRectangleRec(r, c);
+    overlayEnd();
+}
+
+void GameScreen::overlayBridge(Rectangle r, Dir d, Color c, bool start, bool end) {
+    drawBridgeSprite(r, d, 255, start, end, &c);   // (plain shapes: no shader needed)
+}
+
+void GameScreen::overlayBelt(const Belt& b, Color c) {
+    Rectangle r{float(b.pos.x * CELL_SIZE), float(b.pos.y * CELL_SIZE), CELL_SIZE, CELL_SIZE};
+    if (!b.bridge) { overlayBeltSprite(b.incomingMask, b.dir, r, c); return; }
+    auto same = [&](Vec2i p) { int o = world_.bridgeIdAt(p); return o >= 0 && world_.belt(o).dir == b.dir; };
+    overlayBridge(r, b.dir, c, !same(b.pos - dirVec(b.dir)), !same(b.pos + dirVec(b.dir)));
+}
+
+// Hides `tiles` (bare terrain) only where ghost machine g's sprite has pixels,
+// so the old thing still shows through the sprite's transparent parts:
+//  1. the bare terrain of those tiles goes into a scratch texture,
+//  2. the sprite is drawn into it with a blend that keeps each terrain pixel
+//     only as much as the sprite covers it (colour and alpha * sprite alpha),
+//  3. the result is laid over the world (premultiplied alpha).
+void GameScreen::drawHiddenUnderSprite(const GhostMachine& g, const std::vector<Vec2i>& tiles) {
+    constexpr int RT = 128;   // >= the biggest machine (3 x 3 tiles of CELL_SIZE)
+    if (!maskRTReady_) {
+        maskRT_ = LoadRenderTexture(RT, RT);
+        maskRTReady_ = maskRT_.id != 0;
+    }
+    if (!maskRTReady_) {   // (no render textures: hide whole tiles)
+        for (Vec2i t : tiles) drawTerrainTile(t);
+        return;
+    }
+    Vec2i sz = machineSize(g.type, g.dir);
+    Rectangle dest{float(g.tl.x * CELL_SIZE), float(g.tl.y * CELL_SIZE), float(sz.x * CELL_SIZE), float(sz.y * CELL_SIZE)};
+    EndMode2D();
+    BeginTextureMode(maskRT_);
+    ClearBackground(BLANK);
+    Camera2D c{};
+    c.zoom = 1;
+    c.target = {dest.x, dest.y};
+    BeginMode2D(c);
+    for (Vec2i t : tiles) drawTerrainTile(t);
+    rlSetBlendFactors(RL_ZERO, RL_SRC_ALPHA, RL_FUNC_ADD);   // result = what is there * sprite alpha
+    BeginBlendMode(BLEND_CUSTOM);
+    assets::drawMachine(g.type, g.dir, dest, WHITE);
+    EndBlendMode();
+    EndMode2D();
+    EndTextureMode();
+    BeginMode2D(cam2d_);
+    BeginBlendMode(BLEND_ALPHA_PREMULTIPLY);
+    // (render textures are upside down: the drawn area is at the bottom of the texture)
+    DrawTexturePro(maskRT_.texture, {0, float(RT) - dest.height, dest.width, -dest.height}, dest, {0, 0}, 0, WHITE);
+    EndBlendMode();
+}
+
+void GameScreen::drawReplaced(const std::vector<int>& belts, const std::vector<int>& machines, PlaceStatus st, const TileSet& ghost,
+                              const std::vector<GhostMachine>& masked) {
+    if (st != PlaceStatus::Ok && st != PlaceStatus::NoFunds && st != PlaceStatus::NoSpace) return;
+    Color c = st == PlaceStatus::NoSpace ? Color{255, 165, 0, 150} : Color{255, 0, 0, 150};
+    // 1) red on what goes - only on its own pixels, all of it (step 2 covers
+    //    what is under the ghost, so red stays where it still shows through)
+    overlayBegin();
+    for (int id : belts) overlayBelt(world_.belt(id), c);
+    for (int id : machines) {
+        const Machine& m = world_.machine(id);
+        RectF r = m.pixelRect();
+        overlayMachine(m.type, m.dir, {r.x, r.y, r.w, r.h}, c);
+    }
+    overlayEnd();
+    // 2) hide the covered tiles of what goes
+    TileSet groundGone, bridgeGone;
+    for (int id : belts)
+        if (ghost.count(world_.belt(id).pos)) (world_.belt(id).bridge ? bridgeGone : groundGone).insert(world_.belt(id).pos);
+    for (int id : machines) {
+        const Machine& m = world_.machine(id);
+        for (int dy = 0; dy < m.h; ++dy)
+            for (int dx = 0; dx < m.w; ++dx)
+                if (ghost.count(m.pos + Vec2i{dx, dy})) groundGone.insert(m.pos + Vec2i{dx, dy});
+    }
+    TileSet hidden = groundGone;
+    hidden.insert(bridgeGone.begin(), bridgeGone.end());
+    for (const GhostMachine& g : masked) {   // under ghost machines: pixel by pixel (nothing stays there)
+        Vec2i sz = machineSize(g.type, g.dir);
+        std::vector<Vec2i> under;
+        for (int dy = 0; dy < sz.y; ++dy)
+            for (int dx = 0; dx < sz.x; ++dx)
+                if (hidden.erase(g.tl + Vec2i{dx, dy})) under.push_back(g.tl + Vec2i{dx, dy});
+        if (!under.empty()) drawHiddenUnderSprite(g, under);
+    }
+    const unsigned char groundA = fadeGround() ? 77 : 255, bridgeA = fadeBridges() ? 77 : 255;
+    auto same = [&](Vec2i p, Dir d) { int o = world_.bridgeIdAt(p); return o >= 0 && world_.belt(o).dir == d; };
+    for (Vec2i t : hidden) {
+        drawTerrainTile(t);
+        if (!groundGone.count(t))   // only the bridge goes: the belt under it stays
+            if (const Belt* g = world_.beltAt(t)) {
+                Rectangle r{float(t.x * CELL_SIZE), float(t.y * CELL_SIZE), CELL_SIZE, CELL_SIZE};
+                drawTexture(assets::belt(g->incomingMask, g->dir), r, Color{255, 255, 255, groundA});
+                drawBeltItem(*g, groundA);
+            }
+        if (!bridgeGone.count(t))   // only the ground goes: the bridge over it stays
+            if (int bid = world_.bridgeIdAt(t); bid >= 0) {
+                const Belt& br = world_.belt(bid);
+                Rectangle r{float(t.x * CELL_SIZE), float(t.y * CELL_SIZE), CELL_SIZE, CELL_SIZE};
+                drawBridgeSprite(r, br.dir, bridgeA, !same(t - dirVec(br.dir), br.dir), !same(t + dirVec(br.dir), br.dir));
+                drawBeltItem(br, bridgeA);
+            }
+    }
+}
+
 void GameScreen::drawGhostMachine() {
     MachineType type = toMachine(selected_);
     Dir dir = Dir(splitterRot_);   // splitters: 4 directions, a miner: standing / lying
     Vec2i size = machineSize(type, dir);
     Vec2i mt = mouseTile();
     Vec2i tl = Builder::machineTopLeft(type, mt, dir);
-    PlaceStatus st = builder_.checkMachine(type, mt, Dir(splitterRot_), shiftDown());
+    PlacePlan pp;
+    PlaceStatus st = builder_.checkMachine(type, mt, Dir(splitterRot_), shiftDown(), nullptr, nullptr, &pp);
     if (type == MachineType::WaterPump) drawPumpShore(mt);
+    TileSet ghost;
+    for (int dy = 0; dy < size.y; ++dy)
+        for (int dx = 0; dx < size.x; ++dx) ghost.insert(tl + Vec2i{dx, dy});
+    drawReplaced(pp.removeBelts, pp.removeMachines, st, ghost, {{type, dir, tl}});   // (Shift) what goes: hidden under the sprite, red outside
 
     // Splitter: show how neighbouring belts would connect
     if (type == MachineType::Splitter && st != PlaceStatus::Blocked) {
@@ -571,7 +848,7 @@ void GameScreen::drawGhostMachine() {
         case PlaceStatus::Undiscovered: overlay = {20, 20, 20, 170}; break;
         default: break;
     }
-    if (overlay.a) DrawRectangleRec(dest, overlay);
+    if (overlay.a) overlayMachine(type, dir, dest, overlay);
 }
 
 void GameScreen::drawGhostBelts() {
@@ -590,9 +867,11 @@ void GameScreen::drawGhostBelts() {
         if (builder_.beltTileOnWater(mt)) { colors.push_back(waterTint); hasColor.push_back(true); }
         else if (blocked) { colors.push_back(red); hasColor.push_back(true); }
         else {
-            PlaceStatus st = builder_.beltAffordability(plan);
+            PlacePlan pp;   // a machine replaced / a belt turned in place: what goes (the bridge it fed)
+            PlaceStatus st = builder_.beltAffordability(plan, nullptr, nullptr, &pp);
             colors.push_back(st == PlaceStatus::NoSpace ? orange : yellow);
             hasColor.push_back(st != PlaceStatus::Ok);
+            drawReplaced(pp.removeBelts, pp.removeMachines, st, TileSet{mt});
         }
     } else {
         plan = builder_.planBelts(beltStart_, mt, beltDir_);
@@ -609,6 +888,11 @@ void GameScreen::drawGhostBelts() {
         } else {
             auto ok = builder_.runningAffordability(plan);
             for (bool o : ok) { colors.push_back(yellow); hasColor.push_back(!o); }
+            PlacePlan pp;
+            PlaceStatus st = builder_.beltAffordability(plan, nullptr, nullptr, &pp);
+            TileSet ghost;
+            for (auto& bp : plan) ghost.insert(bp.pos);
+            drawReplaced(pp.removeBelts, pp.removeMachines, st, ghost);
         }
     }
 
@@ -636,7 +920,44 @@ void GameScreen::drawGhostBelts() {
     }
 }
 
+// Holding a bridge: the straight line from the start (or the one tile at the
+// mouse), tinted like belt ghosts.
+void GameScreen::drawGhostBridge() {
+    auto plan = bridgePlan();
+    PlacePlan pp = builder_.checkBridge(plan, shiftDown());
+    TileSet ghost;
+    for (auto& bp : plan) ghost.insert(bp.pos);
+    drawReplaced(pp.removeBelts, pp.removeMachines, pp.status, ghost);
+    for (size_t i = 0; i < plan.size(); ++i) {
+        Rectangle r{float(plan[i].pos.x * CELL_SIZE), float(plan[i].pos.y * CELL_SIZE), CELL_SIZE, CELL_SIZE};
+        bool first = i == 0, last = i + 1 == plan.size();
+        drawBridgeSprite(r, plan[i].dir, 190, first, last);
+        PlaceStatus st = i < pp.each.size() ? pp.each[i] : PlaceStatus::Ok;
+        Color tint{0, 0, 0, 0};
+        if (st == PlaceStatus::Blocked || st == PlaceStatus::TooLong || st == PlaceStatus::Unconnected) tint = {255, 0, 0, 170};
+        else if (st == PlaceStatus::Undiscovered) tint = {20, 20, 20, 200};
+        else if (pp.status == PlaceStatus::NoFunds) tint = {255, 255, 0, 170};
+        else if (pp.status == PlaceStatus::NoSpace) tint = {255, 165, 0, 170};
+        if (tint.a) overlayBridge(r, plan[i].dir, tint, first, last);
+    }
+}
+
 void GameScreen::drawDeleteGhost() {
+    // bridges a deletion takes along (they would float): marked like the rest
+    auto markTiles = [&](const std::vector<int>& ids, Color c) {
+        overlayBegin();
+        for (int b : ids) overlayBelt(world_.belt(b), c);
+        overlayEnd();
+    };
+    if (deleteTargetsBridge(mouseTile())) {   // a bridge (Shift: all of it in a row) + the rest of it in front
+        int id = world_.bridgeIdAt(mouseTile());
+        std::vector<int> ids = shiftDown() ? builder_.bridgeRun(id) : std::vector<int>{id};
+        Color c = builder_.canAffordDeletion(ids, {}) ? Color{255, 0, 0, 170} : Color{255, 165, 0, 170};
+        markTiles(ids, c);
+        markTiles(builder_.dependentBridges(ids, {}), c);
+        return;
+    }
+    if (!hasGround(layer_) || dragDelete_ == DragDelete::Bridges) return;
     if (hoveredDelete_ == 0) {   // bare landfill: turned back into water
         Vec2i t = mouseTile();
         if (dragDelete_ == DragDelete::Objects || !builder_.canDeleteLandfillAt(t)) return;
@@ -651,7 +972,7 @@ void GameScreen::drawDeleteGhost() {
     bool canDelete;
     if (hoveredDelete_ > 0) {
         belts = shift ? builder_.connectedBelts(hoveredDelete_ - 1) : std::vector<int>{hoveredDelete_ - 1};
-        canDelete = builder_.canAffordBeltDeletion(belts);
+        canDelete = builder_.canAffordDeletion(belts, {});
         // neighbours as they would look afterwards
         World::Overlay ov;
         for (int id : belts) ov.removed[world_.belt(id).pos] = true;
@@ -667,7 +988,7 @@ void GameScreen::drawDeleteGhost() {
             }
     } else {
         int id = -hoveredDelete_ - 1;
-        canDelete = builder_.canAffordMachineDeletion(id);
+        canDelete = builder_.canAffordDeletion({}, {id});
         const Machine& m = world_.machine(id);
         if (m.isSplitter()) {
             World::Overlay ov;
@@ -681,16 +1002,16 @@ void GameScreen::drawDeleteGhost() {
         }
     }
     Color c = canDelete ? Color{255, 0, 0, 100} : Color{255, 165, 0, 100};
+    markTiles(hoveredDelete_ > 0 ? builder_.dependentBridges(belts, {}) : builder_.dependentBridges({}, {-hoveredDelete_ - 1}),
+              Color{c.r, c.g, c.b, 170});
     if (hoveredDelete_ > 0) {
-        for (int id : belts) {
-            Vec2i pos = world_.belt(id).pos;
-            Vector2 p = toScreen(float(pos.x * CELL_SIZE), float(pos.y * CELL_SIZE));
-            DrawRectangleRec({p.x, p.y, CELL_SIZE, CELL_SIZE}, c);
-        }
+        overlayBegin();
+        for (int id : belts) overlayBelt(world_.belt(id), c);
+        overlayEnd();
     } else {
         const Machine& m = world_.machine(-hoveredDelete_ - 1);
         Vector2 p = toScreen(float(m.pos.x * CELL_SIZE), float(m.pos.y * CELL_SIZE));
-        DrawRectangleRec({p.x, p.y, float(m.w * CELL_SIZE), float(m.h * CELL_SIZE)}, c);
+        overlayMachine(m.type, m.dir, {p.x, p.y, float(m.w * CELL_SIZE), float(m.h * CELL_SIZE)}, c);
     }
 }
 

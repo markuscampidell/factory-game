@@ -48,7 +48,7 @@ void View::visibleTiles(int& l, int& t, int& r, int& b) const {
 
 void View::zoomAt(float factor, Vector2 anchor) {
     Vector2 before = screenToWorld(anchor);
-    zoom = std::clamp(zoom * factor, MIN_ZOOM, MAX_ZOOM);
+    zoom = std::clamp(zoom * factor, MIN_ZOOM, maxZoom());
     x = before.x - anchor.x / zoom;
     y = before.y - anchor.y / zoom;
 }
@@ -65,7 +65,11 @@ GameScreen::GameScreen() {
     world_.recordChanges = true;       // for undo (Ctrl + Z)
 }
 
-GameScreen::~GameScreen() { clearMapChunks(); }
+GameScreen::~GameScreen() {
+    clearMapChunks();
+    if (maskRTReady_) UnloadRenderTexture(maskRT_);
+    if (overlayOk_) UnloadShader(overlayShader_);
+}
 
 void GameScreen::clearMapChunks() {
     for (auto& kv : mapChunks_) UnloadTexture(kv.second.tex);
@@ -102,7 +106,7 @@ void GameScreen::zoomBy(float factor, Vector2 anchor) {
     zoomLastNotch_ = now;
     bool inMap = targetZoom_ < MAP_ZOOM;
     int dir = inMap ? (factor > 1 ? -1 : 0) : (factor < 1 ? 1 : 0);   // pushing towards the other view?
-    float lo = inMap ? MIN_ZOOM : MAP_ZOOM, hi = inMap ? MAP_TOP : MAX_ZOOM;
+    float lo = inMap ? MIN_ZOOM : MAP_ZOOM, hi = inMap ? MAP_TOP : cam_.maxZoom();
     float target = std::clamp(targetZoom_ * factor, lo, hi);
     bool atEdge = std::fabs(target - targetZoom_) < 1e-4f;
     if (dir != 0 && atEdge) {
@@ -137,7 +141,7 @@ void GameScreen::zoomBy(float factor, Vector2 anchor) {
 }
 
 void GameScreen::setZoomTarget(float target, Vector2 anchor) {
-    targetZoom_ = std::clamp(target, MIN_ZOOM, MAX_ZOOM);
+    targetZoom_ = std::clamp(target, MIN_ZOOM, cam_.maxZoom());
     zoomAnchor_ = ui::toReal(anchor);   // the camera works in real window pixels
     zoomToPlayer_ = false;
     // back to the normal view: the camera glides back to the player, so new
@@ -209,7 +213,7 @@ bool GameScreen::loadGame(const std::string& name, std::string* error) {
     markers_ = cs.markers;
     playSeconds_ = cs.playSeconds;
     saveName_ = name;
-    cam_.zoom = targetZoom_ = std::clamp(cs.zoom, MIN_ZOOM, MAX_ZOOM);
+    cam_.zoom = targetZoom_ = std::clamp(cs.zoom, MIN_ZOOM, cam_.maxZoom());
     zoomToPlayer_ = false;
     showOutputs_ = cs.showOutputs;
     if (cs.valid) { cam_.x = cs.x; cam_.y = cs.y; }
@@ -233,6 +237,7 @@ void GameScreen::update(float dt) {
     }
     cam_.w = float(GetScreenWidth());
     cam_.h = float(GetScreenHeight());
+    if (targetZoom_ > cam_.maxZoom()) targetZoom_ = cam_.maxZoom();   // the window got smaller
     fps_ = float(GetFPS());
     if (toastTime_ > 0) toastTime_ -= dt;
     if (std::string err; save::takeSaveError(err)) notify("Saving failed: " + err);
@@ -351,7 +356,7 @@ void GameScreen::updatePasteHold() {
 }
 
 void GameScreen::copyAt(Vector2 p) {
-    TileRef r = world_.refAt(screenToTile(p));
+    TileRef r = objectAt(p);   // (the current layer: bridges have belt filters too)
     const Color ok{120, 255, 140, 255}, bad{255, 110, 110, 255};
     if (r > 0) {
         const Belt& b = world_.belt(r - 1);
@@ -378,7 +383,7 @@ void GameScreen::pasteSuccess(float wx, float wy, const std::string& /*kind*/, c
 }
 
 void GameScreen::pasteAt(Vector2 p) {
-    TileRef r = world_.refAt(screenToTile(p));
+    TileRef r = objectAt(p);   // (the current layer: bridges have belt filters too)
     if (r == 0 || !pastedThisHold_.insert(r).second) return;   // each object once per hold
     const Color bad{255, 110, 110, 255};
 
@@ -595,6 +600,7 @@ void GameScreen::handleKeys(const Event& e) {
         else toggleDelete();
         return;
     }
+    if (e.key == KEY_L) { cycleLayer(); return; }
     if (e.key == KEY_F) { toggleCrafting(); return; }
     if (e.key == KEY_TAB) { toggleInventory(); return; }
     if (craftOpen_) {
@@ -611,7 +617,19 @@ void GameScreen::handleKeys(const Event& e) {
     // assembler under the mouse (keeping what's inside; undo: a step of its own)
     if ((e.key == KEY_R || e.key == KEY_T) && mode_ == BuildMode::None && bpMode_ == BpMode::None && !ctrlDown()) {
         Vector2 m = ui::mouse();
-        if (interactionAllowed(m)) builder_.turnAt(screenToTile(m), e.key == KEY_T ? 2 : shiftDown() ? -1 : 1);
+        if (interactionAllowed(m) && hasGround(layer_)) {   // (placed bridges don't turn)
+            bool noSpace = false;
+            ItemAmounts got;
+            Vec2i t = screenToTile(m);
+            if (builder_.turnAt(t, e.key == KEY_T ? 2 : shiftDown() ? -1 : 1, &noSpace, &got)) {
+                if (!got.empty()) showItemDelta(float(t.x * CELL_SIZE + CELL_SIZE / 2), float(t.y * CELL_SIZE), got);   // a bridge it fed went
+            } else if (noSpace) {
+                Vector2 w = cam_.screenToWorld(ui::toReal(m));
+                floatText(w.x, w.y, std::string(world_.beltIdAt(t) >= 0 ? "Belt" : "This") +
+                                        " can't be turned: the bridge it feeds would go, and that doesn't fit in your inventory",
+                          Color{255, 110, 110, 255});
+            }
+        }
     }
 }
 
@@ -703,8 +721,33 @@ void GameScreen::enterBuild() {
     placingBelt_ = false;
 }
 
+const char* GameScreen::layerName(Layers l) {
+    switch (l) {
+        case Layers::Ground: return "Bottom (belts, splitters, machines, landfill)";
+        case Layers::Bridges: return "Top (bridges)";
+        default: return "Everything";
+    }
+}
+
+void GameScreen::cycleLayer() {   // everything -> bottom -> top -> everything
+    layer_ = layer_ == Layers::All ? Layers::Ground : layer_ == Layers::Ground ? Layers::Bridges : Layers::All;
+    dragDelete_ = DragDelete::Undecided;
+    lastDragged_.reset();
+    closeAllPanels();   // (a panel of the other layer)
+    notify(std::string("Layer: ") + layerName(layer_) + "   (L: next)");
+}
+
+bool GameScreen::deleteTargetsBridge(Vec2i t) const {
+    return hasBridges(layer_) && world_.bridgeIdAt(t) >= 0 && (dragDelete_ == DragDelete::Undecided || dragDelete_ == DragDelete::Bridges);
+}
+
+std::vector<BeltPlan> GameScreen::bridgePlan() const {
+    Vec2i mt = mouseTile();
+    return Builder::planBridge(placingBelt_ ? beltStart_ : mt, mt, beltDir_);
+}
+
 void GameScreen::rotateSelected(int steps) {
-    if (selected_ == Buildable::Belt) { beltDir_ = rotateCW(beltDir_, steps); return; }
+    if (holdingLineTool()) { beltDir_ = rotateCW(beltDir_, steps); return; }
     if (selected_ == Buildable::Landfill) return;   // a square: nothing to turn
     MachineType t = toMachine(selected_);
     if (machineDirMatters(t)) splitterRot_ = floorMod(splitterRot_ + steps, 4);   // splitters; smelters / assemblers: output sides
@@ -755,6 +798,25 @@ void GameScreen::handlePlacement(const Event& e) {
         }
         return;
     }
+    if (mode_ == BuildMode::Building && selected_ == Buildable::Bridge) {   // click start, click end (straight)
+        if (mouseOverOpenPanel(e.pos)) return;
+        if (!placingBelt_) {
+            placingBelt_ = true;
+            beltStart_ = tile;
+        } else {
+            ItemAmounts delta;
+            auto plan = Builder::planBridge(beltStart_, tile, beltDir_);
+            if (builder_.placeBridge(plan, shiftDown(), &delta))
+                showItemDelta(float(plan.back().pos.x * CELL_SIZE + CELL_SIZE / 2), float(plan.back().pos.y * CELL_SIZE), delta);
+            else if (PlaceStatus st = builder_.checkBridge(plan, shiftDown()).status; st == PlaceStatus::TooLong)
+                notify("Bridges are at most " + std::to_string(BRIDGE_MAX_LENGTH) + " tiles in a row - continue with a belt");
+            else if (st == PlaceStatus::Unconnected)
+                notify("A bridge can't float: start it right after a belt, splitter or machine pointing into it");
+            if (plan.size() > 1) beltDir_ = plan[0].dir;   // the next one points the same way
+            placingBelt_ = false;
+        }
+        return;
+    }
     if (mode_ == BuildMode::Building && selected_ == Buildable::Landfill) { if (!mouseOverOpenPanel(e.pos)) tryPlaceLandfillAt(tile); return; }
     if (mode_ == BuildMode::Building) tryPlaceMachineAt(tile);
 }
@@ -763,7 +825,7 @@ void GameScreen::updateDrag() {
     if (mapMode() || bpMode_ != BpMode::None) return;
     if (invOpen_ || machinePanel_ >= 0 || storagePanel_ >= 0 || beltPanel_ >= 0 || splitterPanel_ >= 0) return;
     if (!IsMouseButtonDown(MOUSE_BUTTON_LEFT)) return;
-    if (mode_ == BuildMode::Building && selected_ == Buildable::Belt) return;
+    if (mode_ == BuildMode::Building && holdingLineTool()) return;
     if (overHudButtons(ui::mouse())) return;
     // don't build/delete through the hotbar or the menu button
     for (auto& r : hotbarRects()) if (inRect(r, ui::mouse())) return;
@@ -802,6 +864,17 @@ void GameScreen::tryDeleteAt(Vec2i tile) {
         wy = rc.top();
     }
     ItemAmounts got;
+    // the top-most thing of the layer (a drag sticks to what it deleted first)
+    if (deleteTargetsBridge(tile)) {
+        float bx = float(tile.x * CELL_SIZE + CELL_SIZE / 2), by = float(tile.y * CELL_SIZE);
+        if (builder_.deleteBridgeAt(tile, shiftDown(), &got)) {
+            lastDragged_ = tile;
+            dragDelete_ = DragDelete::Bridges;
+            showItemDelta(bx, by, got);
+        }
+        return;
+    }
+    if (!hasGround(layer_) || dragDelete_ == DragDelete::Bridges) return;
     bool deleted = false, landfill = false;
     if (dragDelete_ != DragDelete::Landfill) {
         deleted = builder_.deleteMachineAt(tile, &got);
@@ -846,11 +919,11 @@ bool GameScreen::pipetteClick(const Event& e) {
     std::string name;
     if (r > 0) {
         const Belt& b = world_.belt(r - 1);
-        select(Buildable::Belt);
+        select(b.bridge ? Buildable::Bridge : Buildable::Belt);
         beltDir_ = b.dir;
         wx = float(b.pos.x * CELL_SIZE + CELL_SIZE / 2);
         wy = float(b.pos.y * CELL_SIZE);
-        name = "belt";
+        name = b.bridge ? "bridge" : "belt";
     } else {
         const Machine& m = world_.machine(-r - 1);
         select(toBuildable(m.type));
@@ -885,7 +958,14 @@ bool GameScreen::interactionAllowed(Vector2 p) const {
     return !mouseOverOpenPanel(p);
 }
 
-TileRef GameScreen::objectAt(Vector2 p) const { return world_.refAt(screenToTile(p)); }
+// What's under the mouse on the current layer ("everything": the top-most).
+// A bridge is a belt, so it comes back as +(beltId + 1) like a belt.
+TileRef GameScreen::objectAt(Vector2 p) const {
+    Vec2i t = screenToTile(p);
+    int bid = hasBridges(layer_) ? world_.bridgeIdAt(t) : -1;
+    if (bid >= 0) return TileRef(bid + 1);
+    return hasGround(layer_) ? world_.refAt(t) : 0;
+}
 
 void GameScreen::worldClick(const Event& e) {
     if (e.type != EvType::MouseDown || e.button != MB_LEFT || justPlaced_ || shiftDown()) return;
@@ -932,7 +1012,7 @@ void GameScreen::pickKey(const Event& e) {
     TileRef r = objectAt(m);
     if (r == 0) return;
     closeAllPanels();
-    if (r > 0) select(Buildable::Belt);
+    if (r > 0) select(world_.belt(r - 1).bridge ? Buildable::Bridge : Buildable::Belt);
     else {
         switch (world_.machine(-r - 1).type) {
             case MachineType::Smelter: select(Buildable::Smelter); break;
@@ -1041,8 +1121,9 @@ namespace {
 // (no number keys: there will be many more buildings - click a slot)
 struct HotbarSlot { int kind; Buildable b; }; // kind 0 something to build, 1 none, 2 delete
 const HotbarSlot HOTBAR[] = {
-    {0, Buildable::Smelter}, {0, Buildable::Assembler}, {0, Buildable::Belt},      {0, Buildable::Splitter}, {0, Buildable::Storage},
-    {0, Buildable::Miner},   {0, Buildable::WaterPump}, {0, Buildable::Landfill}, {1, Buildable::Smelter}, {2, Buildable::Smelter},
+    {0, Buildable::Smelter}, {0, Buildable::Assembler}, {0, Buildable::Belt},     {0, Buildable::Bridge},  {0, Buildable::Splitter},
+    {0, Buildable::Storage}, {0, Buildable::Miner},     {0, Buildable::WaterPump}, {0, Buildable::Landfill}, {1, Buildable::Smelter},
+    {2, Buildable::Smelter},
 };
 constexpr int HOTBAR_N = int(sizeof(HOTBAR) / sizeof(HOTBAR[0]));
 constexpr float SLOT = 56, GAP = 8, MARGIN_BOTTOM = 18;
@@ -1083,6 +1164,9 @@ std::string GameScreen::hotbarTooltip(Vector2 p) const {
         if (s.kind == 2) return "Delete (X)";
         if (s.b == Buildable::Landfill)
             return "Landfill - turns water into land, " + costText(landfillTileCost()) + " per water tile - + / - or Shift + mouse wheel: size";
+        if (s.b == Buildable::Bridge)
+            return "Bridge - " + costText(bridgeBuildCost()) + " per tile - a belt one level up: crosses belts and water, straight only, max " +
+                   std::to_string(BRIDGE_MAX_LENGTH) + " tiles - click start, click end - R to rotate";
         bool belt = s.b == Buildable::Belt;
         std::string name = belt ? "Belt" : machineSpec(toMachine(s.b)).name;
         const ItemAmounts& cost = belt ? beltBuildCost() : machineSpec(toMachine(s.b)).cost;
@@ -1110,7 +1194,11 @@ void GameScreen::drawHotbar() {
         drawButtonBase(r, active ? ui::ACTIVE_SLOT : rgba(55, 55, 55));
         lineRound(r, 8, 2, rgba(20, 20, 20));
         Rectangle inner{r.x + 8, r.y + 8, r.width - 16, r.height - 16};
-        if (s.kind == 0 && s.b == Buildable::Landfill) {
+        if (s.kind == 0 && s.b == Buildable::Bridge) {
+            // a belt with a bridge over it
+            drawTexture(assets::belt(0, Dir::Down), {r.x + 18, r.y + 8, r.width - 36, r.height - 16});
+            drawBridgeSprite({r.x + 8, r.y + 16, r.width - 16, r.height - 32}, Dir::Right, 255, true, true);
+        } else if (s.kind == 0 && s.b == Buildable::Landfill) {
             // a patch of filled ground with a bit of water at the corner
             Rectangle g{r.x + 10, r.y + 10, r.width - 20, r.height - 20};
             DrawRectangleRec(g, Color{88, 70, 48, 255});
@@ -1193,6 +1281,7 @@ void GameScreen::applyUndo(std::vector<UndoRecord>& from, std::vector<UndoRecord
         case Builder::UndoResult::PlayerInTheWay: notify("Can't " + v + ": you are standing in the way"); break;
         case Builder::UndoResult::NoFunds: notify("Can't " + v + ": you don't have the items for it"); break;
         case Builder::UndoResult::NoSpace: notify("Can't " + v + ": not enough inventory space"); break;
+        case Builder::UndoResult::Floating: notify("Can't " + v + ": a bridge would be left in the air"); break;
         case Builder::UndoResult::Nothing: from.pop_back(); break;
     }
 }

@@ -145,6 +145,7 @@ void World::clear() {
     chunks_.clear();
     explored_.clear();
     landfill_.clear();
+    bridges_.clear();
     belts_.clear();
     freeBelts_.clear();
     machines_.clear();
@@ -237,6 +238,7 @@ void World::removeLandfill(Vec2i t) {
 static ObjSnap beltSnap(const Belt& b) {
     ObjSnap s;
     s.belt = true;
+    s.bridge = b.bridge;
     s.pos = b.pos;
     s.beltState = b;
     return s;
@@ -305,11 +307,84 @@ int World::addBelt(Vec2i pos, Dir dir) {
     return id;
 }
 
+int World::addBridge(Vec2i pos, Dir dir) {
+    int id;
+    if (!freeBelts_.empty()) { id = freeBelts_.back(); freeBelts_.pop_back(); }
+    else { id = int(belts_.size()); belts_.emplace_back(); }
+    Belt& b = belts_[size_t(id)];
+    b = Belt{};
+    b.alive = true;
+    b.bridge = true;
+    b.pos = pos;
+    b.dir = dir;
+    b.itemFrom = dir;
+    bridges_[pos] = id;
+    Vec2i k = chunkOf(pos);
+    ++chunk(k.x, k.y, true)->version;   // the map view redraws that chunk
+    topologyDirty_ = true;
+    if (recordChanges) recordAdded(beltSnap(b));
+    return id;
+}
+
+TileRef World::bridgeStartRef(Vec2i t, Dir d) const {
+    int id = bridgeIdAt(t);
+    if (id < 0 || belts_[size_t(id)].dir != d) return 0;
+    int prev = bridgeIdAt(t - dirVec(d));
+    if (prev >= 0 && belts_[size_t(prev)].dir == d) return 0;   // the middle of a bridge
+    return TileRef(id + 1);
+}
+
+int World::bridgeRunLength(Vec2i t, Dir d) const {
+    auto pointing = [&](Vec2i p) { int id = bridgeIdAt(p); return id >= 0 && belts_[size_t(id)].dir == d; };
+    if (!pointing(t)) return 0;
+    int n = 1;
+    for (Vec2i p = t - dirVec(d); pointing(p) && n <= 64; p = p - dirVec(d)) ++n;
+    for (Vec2i p = t + dirVec(d); pointing(p) && n <= 64; p = p + dirVec(d)) ++n;
+    return n;
+}
+
+bool World::groundPushes(Vec2i src, Dir travel) const {
+    TileRef r = refAt(src);
+    if (r > 0) return belts_[size_t(r - 1)].dir == travel;
+    if (r < 0) {
+        const Machine& m = *machines_[size_t(-r - 1)];
+        if (m.isSplitter()) return travel != opposite(m.dir);
+        if (m.isStorage()) return true;   // (straight away - the next tile is straight away)
+        return isOutputSide(m.type, m.dir, travel);
+    }
+    return false;
+}
+
+bool World::bridgeSupported(int id) const {
+    const Belt& b = belts_[size_t(id)];
+    Vec2i p = b.pos;
+    for (int n = 0; n < 64; ++n) {   // back to the first tile of the bridge
+        int prev = bridgeIdAt(p - dirVec(b.dir));
+        if (prev < 0 || belts_[size_t(prev)].dir != b.dir) break;
+        p = p - dirVec(b.dir);
+    }
+    return groundPushes(p - dirVec(b.dir), b.dir);
+}
+
+std::vector<int> World::floatingBridges() const {
+    std::vector<int> out;
+    for (auto& kv : bridges_)
+        if (!bridgeSupported(kv.second)) out.push_back(kv.second);
+    std::sort(out.begin(), out.end());
+    return out;
+}
+
 void World::removeBelt(int id) {
     Belt& b = belts_[size_t(id)];
     if (!b.alive) return;
     if (recordChanges) recordRemoved(beltSnap(b));
-    setRef(b.pos, 0);
+    if (b.bridge) {
+        bridges_.erase(b.pos);
+        Vec2i k = chunkOf(b.pos);
+        ++chunk(k.x, k.y, true)->version;
+    } else {
+        setRef(b.pos, 0);
+    }
     b = Belt{};
     freeBelts_.push_back(id);
     topologyDirty_ = true;
@@ -351,8 +426,41 @@ void World::removeMachine(int id) {
 // ---------------------------------------------------------------------------
 // Incoming directions (which sides feed a belt tile)
 // ---------------------------------------------------------------------------
-uint8_t World::computeIncoming(Vec2i pos, Dir dir, const Overlay* ov) const {
+// What can feed a belt tile from side `travel` (items moving `travel`).
+// Ground belts: a belt / splitter pointing at it, a machine output side, a
+// bridge ending straight into it - but whatever points straight into the
+// first tile of a bridge lying on top of this tile feeds the bridge instead.
+// Bridges: only straight from behind - the bridge behind them, or (first
+// tile) a belt / splitter / machine pushing straight in.
+static uint8_t feedsCore(const World& w, const std::vector<Belt>& belts, const std::vector<std::unique_ptr<Machine>>& machines,
+                         Vec2i pos, Dir dir, bool bridge, const World::Overlay* ov, std::array<int32_t, 4>* refs) {
     uint8_t mask = 0;
+    if (refs) refs->fill(0);
+    auto feed = [&](Dir travel, TileRef r) {
+        mask |= dirBit(travel);
+        if (refs) (*refs)[size_t(travel)] = r;
+    };
+    // a ground thing at `src` pushing `travel` (belt, splitter, machine)
+    auto groundFeeds = [&](Vec2i src, Dir travel, bool toBridge, bool straightOnly) -> TileRef {
+        TileRef r = w.refAt(src);
+        if (r > 0) return (belts[size_t(r - 1)].dir == travel && !toBridge) ? r : 0;
+        if (r < 0) {
+            const Machine& m = *machines[size_t(-r - 1)];
+            if (ov && ov->ignoreMachine == -r - 1) return 0;
+            if (m.isSplitter()) return (travel != opposite(m.dir) && !toBridge) ? r : 0;
+            if (m.isStorage()) return travel == dir ? r : 0;   // a chest only pushes straight away
+            if (isOutputSide(m.type, m.dir, travel) && (!straightOnly || travel == dir)) return r;
+        }
+        return 0;
+    };
+    if (bridge) {
+        Dir travel = dir;
+        Vec2i src = pos - dirVec(travel);
+        int bid = w.bridgeIdAt(src);
+        if (bid >= 0 && belts[size_t(bid)].dir == travel) { feed(travel, TileRef(bid + 1)); return mask; }
+        if (TileRef r = groundFeeds(src, travel, false, true)) feed(travel, r);
+        return mask;
+    }
     for (int i = 0; i < 4; ++i) {
         Dir travel = Dir(i);                  // direction items would move
         if (travel == opposite(dir)) continue; // never from straight ahead
@@ -367,58 +475,75 @@ uint8_t World::computeIncoming(Vec2i pos, Dir dir, const Overlay* ov) const {
             }
             removed = ov->removed.count(src) != 0;
         }
-        TileRef r = refAt(src);
-        if (r > 0 && !removed) {              // a belt feeds us if it points here
-            if (belts_[size_t(r - 1)].dir == travel) mask |= dirBit(travel);
-            continue;
+        if (travel == dir) {                  // a bridge ending straight into this belt
+            int bid = w.bridgeIdAt(src);
+            if (bid >= 0 && belts[size_t(bid)].dir == travel) { feed(travel, TileRef(bid + 1)); continue; }
         }
+        bool toBridge = w.bridgeStartRef(pos, travel) != 0;   // a bridge starts on this tile: it gets them
         if (ov && ov->hasSplitter && ov->splitterPos == src) {
-            if (travel != opposite(ov->splitterDir)) mask |= dirBit(travel);
+            if (travel != opposite(ov->splitterDir) && !toBridge) mask |= dirBit(travel);
             continue;
         }
-        if (r < 0) {
-            int mid = -r - 1;
-            if (ov && ov->ignoreMachine == mid) continue;
-            const Machine& m = *machines_[size_t(mid)];
-            if (m.isSplitter()) {
-                if (travel != opposite(m.dir)) mask |= dirBit(travel);
-            } else if (m.isStorage()) {
-                // a chest only pushes onto a belt pointing straight away
-                if (travel == dir) mask |= dirBit(travel);
-            } else if (isOutputSide(m.type, m.dir, travel)) {
-                // a belt on an output side of a machine (pointing away or
-                // running past it, joined like an intersection)
-                mask |= dirBit(travel);
-            }
-        }
+        if (removed) continue;
+        if (TileRef r = groundFeeds(src, travel, toBridge, false)) feed(travel, r);
     }
     return mask;
+}
+
+uint8_t World::computeIncoming(Vec2i pos, Dir dir, const Overlay* ov) const {
+    return feedsCore(*this, belts_, machines_, pos, dir, false, ov, nullptr);
+}
+
+uint8_t World::computeFeeds(const Belt& b, std::array<int32_t, 4>* refs) const {
+    return feedsCore(*this, belts_, machines_, b.pos, b.dir, b.bridge, nullptr, refs);
 }
 
 void World::ensureTopology() {
     if (!topologyDirty_) return;
     // 1) neighbours that don't depend on the incoming masks
     splitterIds_.clear();
-    for (auto& b : belts_)
-        if (b.alive) b.frontRef = refAt(b.pos + dirVec(b.dir));
+    for (auto& b : belts_) {
+        if (!b.alive) continue;
+        Vec2i q = b.pos + dirVec(b.dir);
+        if (!b.bridge) {   // a bridge starting in front (pointing the same way) takes the items
+            TileRef s0 = bridgeStartRef(q, b.dir);
+            b.frontRef = s0 ? s0 : refAt(q);
+            continue;
+        }
+        // a bridge: only straight on - the next bridge tile, or at its end a
+        // belt / splitter pointing the same way, or a machine
+        b.frontRef = 0;
+        int nb = bridgeIdAt(q);
+        if (nb >= 0) {
+            if (belts_[size_t(nb)].dir == b.dir) b.frontRef = TileRef(nb + 1);
+            continue;
+        }
+        TileRef r = refAt(q);
+        if (r > 0 && belts_[size_t(r - 1)].dir == b.dir) b.frontRef = r;
+        else if (r < 0 && (!machines_[size_t(-r - 1)]->isSplitter() || machines_[size_t(-r - 1)]->dir == b.dir)) b.frontRef = r;
+    }
     for (int mid = 0; mid < int(machines_.size()); ++mid) {
         if (!machineAlive(mid) || !machines_[size_t(mid)]->isSplitter()) continue;
         Machine& m = *machines_[size_t(mid)];
         splitterIds_.push_back(mid);
-        for (int i = 0; i < 3; ++i) m.sideRef[size_t(i)] = refAt(m.pos + dirVec(m.sideDir(i)));
-        m.backRef = refAt(m.pos - dirVec(m.dir));
+        for (int i = 0; i < 3; ++i) {
+            Vec2i t = m.pos + dirVec(m.sideDir(i));
+            TileRef s0 = bridgeStartRef(t, m.sideDir(i));   // a bridge starting there gets it
+            m.sideRef[size_t(i)] = s0 ? s0 : refAt(t);
+        }
+        Vec2i back = m.pos - dirVec(m.dir);
+        int bb = bridgeIdAt(back);   // a bridge ending straight into the splitter
+        m.backRef = (bb >= 0 && belts_[size_t(bb)].dir == m.dir) ? TileRef(bb + 1) : refAt(back);
     }
     // 2) incoming masks
     for (auto& b : belts_) {
         if (!b.alive) continue;
         uint8_t old = b.incomingMask;
-        b.incomingMask = computeIncoming(b.pos, b.dir);
+        b.incomingMask = computeFeeds(b, &b.feedRef);
         if (old != b.incomingMask && !(b.incomingMask & dirBit(Dir(b.rr % 4)))) {
             // keep favouring the same side if it still exists, else restart
             b.rr = 0;
         }
-        for (int i = 0; i < 4; ++i)
-            b.feedRef[size_t(i)] = (b.incomingMask & dirBit(Dir(i))) ? refAt(b.pos - dirVec(Dir(i))) : 0;
     }
     // 3) what each machine pushes onto (computeIncoming decided that)
     for (auto& mp : machines_) {
@@ -430,6 +555,11 @@ void World::ensureTopology() {
             TileRef r = refAt(ot.tile);
             if (r > 0 && (belts_[size_t(r - 1)].incomingMask & dirBit(ot.dir))) {
                 m.outBelts.push_back(r - 1);
+                m.outDirs.push_back(ot.dir);
+            }
+            int bid = bridgeIdAt(ot.tile);   // a bridge starting there, pointing straight away
+            if (bid >= 0 && (belts_[size_t(bid)].incomingMask & dirBit(ot.dir)) && belts_[size_t(bid)].feedRef[size_t(ot.dir)] < 0) {
+                m.outBelts.push_back(bid);
                 m.outDirs.push_back(ot.dir);
             }
         });

@@ -482,7 +482,7 @@ bool GameScreen::pickerClick(Vector2 tl, const Event& e) {
 void GameScreen::drawBeltFilterPanel() {
     if (beltPanel_ < 0) return;
     Rectangle r = beltFilterRect();
-    drawPanel(r, "Belt Filter");
+    drawPanel(r, world_.belt(beltPanel_).bridge ? "Bridge Filter" : "Belt Filter");
     Vector2 content{r.x + FP_PAD, r.y + FP_TITLE};
     drawFilterPanel(content, world_.belt(beltPanel_).filter, nullptr);
     drawPicker({content.x + filterContentW() + FP_PICKER_GAP, content.y});

@@ -12,6 +12,7 @@ struct BlueprintBelt {
     Dir dir = Dir::Right;
     ItemFilter filter;
     uint8_t mask = 0;        // incoming sides inside the blueprint (for drawing)
+    bool bridge = false;     // on the bridge layer
 };
 
 struct BlueprintMachine {
@@ -70,24 +71,35 @@ Selection makeSelection(Vec2i start, Vec2i end);
 // with one or two tiles).
 void gatherSelection(const World& w, const Selection& s, std::vector<int>& belts, std::vector<int>& machines);
 
+// Layers you work on (L in the game): the ground (belts, splitters,
+// machines, landfill), the bridges on top, or both.
+enum class Layers : uint8_t { Ground = 1, Bridges = 2, All = 3 };
+inline bool hasGround(Layers l) { return (uint8_t(l) & 1) != 0; }
+inline bool hasBridges(Layers l) { return (uint8_t(l) & 2) != 0; }
+
+// The bridges inside a selection (belt ids).
+std::vector<int> gatherBridges(const World& w, const Selection& s);
+
 // The landfilled tiles inside a selection (row by row).
 std::vector<Vec2i> gatherLandfill(const World& w, const Selection& s);
 
 // Which things a selection takes:
-//  * Everything: belts, machines and landfill (blueprints, Ctrl + B).
-//  * ObjectsFirst: belts and machines if there are any - otherwise only the
-//    landfill, and only tiles with nothing on them (Copy area / Delete area:
-//    dragging over a factory on landfill takes just the factory).
+//  * Everything: belts, bridges, machines and landfill (blueprints, Ctrl + B).
+//  * ObjectsFirst: belts, bridges and machines if there are any - otherwise
+//    only the landfill, and only tiles with nothing on them (Copy area /
+//    Delete area: dragging over a factory on landfill takes just the factory).
+// Only from the given layers (landfill belongs to the ground).
 enum class SelectRule { Everything, ObjectsFirst };
 struct SelectionContent {
-    std::vector<int> belts, machines;
+    std::vector<int> belts, machines;   // (ground belts)
+    std::vector<int> bridges;           // belt ids on the bridge layer
     std::vector<Vec2i> landfill;
-    bool empty() const { return belts.empty() && machines.empty() && landfill.empty(); }
+    bool empty() const { return belts.empty() && machines.empty() && bridges.empty() && landfill.empty(); }
 };
-SelectionContent gatherContent(const World& w, const Selection& s, SelectRule rule);
+SelectionContent gatherContent(const World& w, const Selection& s, SelectRule rule, Layers layers = Layers::All);
 
 // What a selection from `start` to `end` takes (see gatherContent).
-Blueprint captureBlueprint(const World& w, Vec2i start, Vec2i end, SelectRule rule = SelectRule::Everything);
+Blueprint captureBlueprint(const World& w, Vec2i start, Vec2i end, SelectRule rule = SelectRule::Everything, Layers layers = Layers::All);
 
 // The same blueprint without its landfill ("Include landfill" off): size and
 // offsets shrink to the belts and machines. Empty if there is nothing else.

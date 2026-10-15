@@ -1,5 +1,6 @@
 // sim/Save.cpp
 #include "Save.hpp"
+#include "Build.hpp"   // bridgeBuildCost
 #include <nlohmann/json.hpp>
 #include <algorithm>
 #include <cmath>
@@ -434,7 +435,7 @@ bool writeSave(const SaveData& d, const std::string& name, std::string* error) {
     for (const MapMarker& m : d.cam.markers) markers.push_back({{"x", m.tile.x}, {"y", m.tile.y}, {"name", m.name}, {"symbol", m.symbol}});
     data["markers"] = std::move(markers);
     data["seed"] = d.seed;
-    json belts = json::array();
+    json belts = json::array(), bridges = json::array();
     for (const Belt& b : d.belts) {
         json jb;
         jb["grid_pos"] = json::array({b.pos.x, b.pos.y});
@@ -443,9 +444,10 @@ bool writeSave(const SaveData& d, const std::string& name, std::string* error) {
         jb["filter"] = filterToJson(b.filter);
         jb["progress"] = b.progress;               // C++ extra
         jb["item_from"] = dirToJson(b.itemFrom);   // C++ extra
-        belts.push_back(std::move(jb));
+        (b.bridge ? bridges : belts).push_back(std::move(jb));
     }
     data["belts"] = std::move(belts);
+    data["bridges"] = std::move(bridges);   // C++ extra: belts on the bridge layer
     json machines = json::array();
     for (const Machine& m : d.machines) machines.push_back(machineToJson(m));
     data["machines"] = std::move(machines);
@@ -526,7 +528,7 @@ bool takeSaveError(std::string& error) {
 int removeBuiltOnWater(World& w) {
     int removed = 0;
     for (int id = 0; id < int(w.belts().size()); ++id)
-        if (w.belt(id).alive && w.isWater(w.belt(id).pos)) { w.removeBelt(id); ++removed; }
+        if (w.belt(id).alive && !w.belt(id).bridge && w.isWater(w.belt(id).pos)) { w.removeBelt(id); ++removed; }   // (bridges may)
     for (int id = 0; id < int(w.machineSlots()); ++id) {
         if (!w.machineAlive(id)) continue;
         const Machine& m = w.machine(id);
@@ -614,9 +616,36 @@ bool loadGame(World& w, Player& p, CameraState& cam, const std::string& name, st
             w.addMachine(std::move(m));
         }
 
+        // bridges (belts on the bridge layer): anywhere but on machines
+        for (const json& jb : data.value("bridges", json::array())) {
+            Vec2i pos = posFromJson(jb["grid_pos"]);
+            Dir d = Dir::Right;
+            dirFromJson(jb["direction"], d);
+            bool hasItem = jb.contains("item") && jb["item"].is_string();
+            if (w.machineIdAt(pos) >= 0 || w.bridgeIdAt(pos) >= 0) {
+                if (hasItem) addAmount(lost, itemByStringId(jb["item"].get<std::string>()), 1);   // (like belts)
+                continue;
+            }
+            Belt& b = w.belt(w.addBridge(pos, d));
+            if (hasItem) b.item = itemByStringId(jb["item"].get<std::string>());
+            if (jb.contains("filter")) b.filter = filterFromJson(jb["filter"]);
+            b.progress = uint8_t(std::clamp(jb.value("progress", 0), 0, BELT_TICKS_PER_TILE));
+            if (jb.contains("item_from")) dirFromJson(jb["item_from"], b.itemFrom);
+            else b.itemFrom = d;
+        }
+
         // Saves from before lakes and seas: whatever now stands on water is
         // gone - deleted with its contents, nothing is refunded.
         removeBuiltOnWater(w);
+
+        // bridges can't float (saves from before that rule): they go back
+        // into the inventory - build cost and what lay on them
+        for (int id : w.floatingBridges()) {
+            const Belt& b = w.belt(id);
+            if (b.item != NO_ITEM) addAmount(lost, b.item, 1);
+            for (auto& c : bridgeBuildCost()) addAmount(lost, c.first, c.second);
+            w.removeBelt(id);
+        }
 
         // Anything that had nowhere to go goes into the player's inventory
         // (or, if that's full, a storage box placed next to the player), so
@@ -717,6 +746,7 @@ std::vector<Blueprint> loadBlueprints(std::vector<BlueprintBook>* booksOut) {
                 bb.off = {b.value("x", 0), b.value("y", 0)};
                 if (b.contains("direction")) dirFromJson(b["direction"], bb.dir);
                 if (b.contains("filter")) bb.filter = filterFromJson(b["filter"]);
+                bb.bridge = b.value("bridge", false);
                 bp.belts.push_back(bb);
             }
             for (const json& m : jb.value("machines", json::array())) {
@@ -753,8 +783,11 @@ bool saveBlueprints(const std::vector<Blueprint>& list, const std::vector<Bluepr
         jb["w"] = bp.w;
         jb["h"] = bp.h;
         json belts = json::array();
-        for (auto& b : bp.belts)
-            belts.push_back({{"x", b.off.x}, {"y", b.off.y}, {"direction", dirToJson(b.dir)}, {"filter", filterToJson(b.filter)}});
+        for (auto& b : bp.belts) {
+            json jbelt = {{"x", b.off.x}, {"y", b.off.y}, {"direction", dirToJson(b.dir)}, {"filter", filterToJson(b.filter)}};
+            if (b.bridge) jbelt["bridge"] = true;
+            belts.push_back(std::move(jbelt));
+        }
         json machines = json::array();
         for (auto& m : bp.machines) {
             json filters = json::array();

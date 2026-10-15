@@ -7,6 +7,7 @@
 #include "../sim/Player.hpp"
 #include "../sim/Build.hpp"
 #include "../sim/Save.hpp"
+#include <algorithm>
 #include <cmath>
 #include <memory>
 #include <optional>
@@ -14,11 +15,13 @@
 #include <set>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 enum class BuildMode { None, Building, Deleting };
 // Landfill isn't a machine: it turns water into land (see Builder::placeLandfill).
-enum class Buildable { Smelter, Assembler, Belt, Splitter, Storage, Miner, WaterPump, Landfill };
+// Bridge: a belt on the bridge layer (see Belt in World.hpp).
+enum class Buildable { Smelter, Assembler, Belt, Splitter, Storage, Miner, WaterPump, Landfill, Bridge };
 
 inline Buildable toBuildable(MachineType t) {
     switch (t) {
@@ -47,7 +50,9 @@ inline MachineType toMachine(Buildable b) {
 // belts become plain coloured boxes, the player can't move and nothing can
 // be built or deleted (WASD pans the map instead).
 constexpr float MIN_ZOOM = 0.01f;   // map view, zoomed all the way out (1 %)
-constexpr float MAX_ZOOM = 3.0f;
+// Closest zoom: at most MAX_ZOOM_TILES tiles across the window (its longer
+// side), but never less than 300 % - see View::maxZoom.
+constexpr int MAX_ZOOM_TILES = 4;
 constexpr float MAP_ZOOM = 0.4f;
 
 // x/y = world pixel at the top-left of the screen, w/h = screen size,
@@ -57,6 +62,7 @@ struct View {
     float zoom = 1.0f;
     float margin = 350, smooth = 0.05f;
     float viewW() const { return w / zoom; }
+    float maxZoom() const { return std::max(3.0f, std::max(w, h) / float(MAX_ZOOM_TILES * CELL_SIZE)); }
     float viewH() const { return h / zoom; }
     void centerOn(float px, float py) { x = px - viewW() / 2; y = py - viewH() / 2; }
     void follow(const RectF& r);
@@ -80,6 +86,11 @@ void drawBlueprintMap(const Blueprint& bp, Rectangle square);
 // even-length side). `dest` = the machine in world pixels.
 bool hasSideArrows(MachineType t);
 void drawOutputSideArrows(MachineType t, Dir d, Rectangle dest, unsigned char alpha = 230);
+// One bridge tile pointing `d` (very see-through deck, solid rails); start /
+// end: ramps at the ends of a bridge. `alpha` scales all of it.
+// overlay: draw every part in that colour instead (a tint that only covers
+// the bridge's own pixels - see GameScreen::overlayBridge).
+void drawBridgeSprite(Rectangle r, Dir d, unsigned char alpha, bool start, bool end, const Color* overlay = nullptr);
 // Map marker symbols: every sprite of the game (items, machines, belt).
 struct MarkerSymbol { std::string id, name; };
 const std::vector<MarkerSymbol>& markerSymbols();
@@ -115,7 +126,7 @@ private:
     float interp_ = 0;            // 0..1 between the last two ticks
     float fps_ = 0;
     uint64_t frameNo_ = 0;   // +1 every draw()
-    // The held blueprint checked at the mouse - the ghost and the "Needs:" box
+    // The held blueprint checked at the mouse - the ghost and the "Cost:" box
     // both need it; computed once per frame.
     struct BpCheckCache { uint64_t frame = ~0ull; Vec2i tl; bool replace = false; Builder::BlueprintCheck check; };
     BpCheckCache bpCheck_;
@@ -179,14 +190,63 @@ private:
     void resizeLandfill(int delta);
     void tryPlaceLandfillAt(Vec2i tile);
     void drawGhostLandfill();
-    bool placingBelt_ = false;
+    // ---- bridges: placed like belts (click start, click end), always straight ----
+    bool holdingLineTool() const { return selected_ == Buildable::Belt || selected_ == Buildable::Bridge; }
+    std::vector<BeltPlan> bridgePlan() const;   // what a click would place now
+    void drawGhostBridge();
+    // Building: what the placement would take away - replaced belts /
+    // machines / bridges (Shift) and bridges that would float - red, orange
+    // if the refund doesn't fit. Tiles in `ghost` (what is being placed) stay
+    // clear, so only the parts outside the new thing are marked.
+    using TileSet = std::unordered_set<Vec2i, Vec2iHash>;
+    // The covered tiles of what goes are hidden (drawn as bare ground, with
+    // whatever stays on that tile - the belt under a replaced bridge, the
+    // bridge over a replaced belt - drawn again).
+    // Ghost machines in `masked`: under them only the pixels their sprite
+    // covers are hidden - the old thing shows through the sprite's
+    // transparent parts (drawHiddenUnderSprite).
+    struct GhostMachine { MachineType type; Dir dir; Vec2i tl; };
+    void drawReplaced(const std::vector<int>& belts, const std::vector<int>& machines, PlaceStatus st, const TileSet& ghost,
+                      const std::vector<GhostMachine>& masked = {});
+    void drawHiddenUnderSprite(const GhostMachine& g, const std::vector<Vec2i>& tiles);
+    Camera2D cam2d_{};                 // the world camera of this frame (draw())
+    // ---- overlays (red / yellow / blue / white tints on things) ----
+    // Drawn only on the pixels a sprite really has, not on its transparent
+    // parts: the sprite is drawn again in the overlay colour through a tiny
+    // shader that keeps just the sprite's alpha. Wrap many overlays in
+    // overlayBegin / overlayEnd so they are drawn in one go (nesting is fine).
+    void overlayBegin();
+    void overlayEnd();
+    void overlayBeltSprite(uint8_t mask, Dir d, Rectangle r, Color c);
+    void overlayBelt(const Belt& b, Color c);   // a ground belt or a bridge
+    void overlayMachine(MachineType t, Dir d, Rectangle r, Color c);
+    void overlayBridge(Rectangle r, Dir d, Color c, bool start, bool end);
+    Shader overlayShader_{};
+    bool overlayLoaded_ = false, overlayOk_ = false;
+    int overlayDepth_ = 0;
+    RenderTexture2D maskRT_{};         // scratch for drawHiddenUnderSprite (one machine at a time)
+    bool maskRTReady_ = false;
+    void drawTerrainTile(Vec2i t);
+    void drawBeltItem(const Belt& b, unsigned char alpha);
+    // Layers (L cycles): everything, the bottom (belts, splitters, machines,
+    // landfill) or the top (bridges). Clicking, deleting, Delete area, Copy
+    // area and blueprints only take things from the chosen layer; the other
+    // one is drawn faded. "Everything" clicks / deletes the top-most thing.
+    Layers layer_ = Layers::All;
+    bool fadeGround() const { return layer_ == Layers::Bridges; }
+    bool fadeBridges() const { return layer_ == Layers::Ground; }
+    void cycleLayer();
+    static const char* layerName(Layers l);
+    bool deleteTargetsBridge(Vec2i t) const;   // a delete click there would take a bridge
+    void drawBridges();
+    bool placingBelt_ = false;     // (belts and bridges: the start is set)
     Vec2i beltStart_;
     std::optional<Vec2i> lastDragged_;
     std::set<int> dragPlaced_;
     // What a delete drag removes, decided by its first deletion: belts /
     // machines or landfill - never both, so dragging over a machine on
     // landfill doesn't take the landfill under it away too.
-    enum class DragDelete : uint8_t { Undecided, Objects, Landfill };
+    enum class DragDelete : uint8_t { Undecided, Objects, Landfill, Bridges };
     DragDelete dragDelete_ = DragDelete::Undecided;
     bool justPlaced_ = false;
     TileRef hoveredDelete_ = 0;
@@ -475,7 +535,7 @@ private:
     // "+1 Copper Ingot, -2 Iron Ingot" after building / deleting / pasting.
     // Green when you got items back, orange when you paid, white if both.
     void showItemDelta(float wx, float wy, const ItemAmounts& delta);
-    // "Needs: ..." box while holding a ghost machine / belt / blueprint.
+    // "Cost: ..." box while holding a ghost machine / belt / blueprint.
     void drawCostInfo();
 
     // ---- middle click: pick up a machine / belt / splitter to build it ----

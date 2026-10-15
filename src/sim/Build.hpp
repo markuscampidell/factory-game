@@ -14,6 +14,7 @@
 #include <optional>
 #include <set>
 #include <string>
+#include <unordered_set>
 #include <vector>
 
 // Undiscovered: (part of) it would be in a chunk you haven't explored yet.
@@ -22,7 +23,10 @@
 // OnWater: something would stand on water; NeedsWater: a water pump that
 // doesn't touch water.
 // NoWater: landfill where there is no water to fill.
-enum class PlaceStatus : uint8_t { Ok, Blocked, NoSpace, NoFunds, NoOre, Undiscovered, OutOfReach, OnWater, NeedsWater, NoWater };
+// TooLong: more than BRIDGE_MAX_LENGTH bridge tiles in a row.
+// Unconnected: a bridge whose first tile nothing points straight into (no
+// belt, splitter or machine behind it) - bridges can't float in the air.
+enum class PlaceStatus : uint8_t { Ok, Blocked, NoSpace, NoFunds, NoOre, Undiscovered, OutOfReach, OnWater, NeedsWater, NoWater, TooLong, Unconnected };
 
 // Landfill turns water into land: 10 limestone per water tile. Placed as a
 // square of LANDFILL_MIN..LANDFILL_MAX tiles per side (+ / - or Shift + mouse
@@ -35,6 +39,8 @@ const ItemAmounts& landfillTileCost();
 bool touchesWater(World& w, MachineType t, Vec2i topLeft, Dir d);
 
 const ItemAmounts& beltBuildCost();
+const ItemAmounts& bridgeBuildCost();   // double a belt
+inline const ItemAmounts& beltCost(bool bridge) { return bridge ? bridgeBuildCost() : beltBuildCost(); }
 
 struct BeltPlan {
     Vec2i pos;
@@ -56,6 +62,7 @@ struct BeltPlan {
 //  * New objects cost their build cost. All or nothing.
 struct PlaceRequest {
     bool belt = false;
+    bool bridge = false;              // a belt on the bridge layer (anywhere but on machines / splitters)
     Vec2i pos;                        // belt tile / machine top-left
     MachineType type = MachineType::Smelter;
     Dir dir = Dir::Right;
@@ -72,6 +79,7 @@ struct PlacePlan {
     std::vector<int> removeBelts, removeMachines;
     ItemAmounts delta;                // inventory change: + got back, - paid
     ItemAmounts cost;                 // build cost of the new objects only (+ landfill)
+    ItemAmounts refund;               // what comes back: replaced things (build cost + contents), recipe changes
     std::vector<Vec2i> fill;          // water tiles filled first (blueprints with landfill)
 };
 
@@ -113,11 +121,25 @@ public:
 
     // ---- machines ----
     static Vec2i machineTopLeft(MachineType t, Vec2i mouseTile, Dir d = Dir::Right);
-    PlaceStatus checkMachine(MachineType t, Vec2i mouseTile, Dir dir, bool allowReplace, ItemAmounts* cost = nullptr) const;
+    // planOut: the whole plan - removeBelts / removeMachines are what the
+    // placement takes away (replaced, or bridges that would float) - for
+    // marking them red
+    PlaceStatus checkMachine(MachineType t, Vec2i mouseTile, Dir dir, bool allowReplace, ItemAmounts* cost = nullptr,
+                             ItemAmounts* refund = nullptr, PlacePlan* planOut = nullptr) const;
+    std::vector<int> bridgesAmong(const std::vector<int>& beltIds) const;
     // Returns the new machine id, or -1. `protectedIds` are never replaced.
     int placeMachine(MachineType t, Vec2i mouseTile, Dir dir, bool allowReplace, const std::set<int>* protectedIds,
                      ItemAmounts* delta = nullptr);
     bool canAffordMachineDeletion(int id) const;
+    // Bridges can't float: deleting what feeds a bridge (the belt, splitter
+    // or machine pointing into its first tile) or a bridge tile with more of
+    // the bridge in front of it takes those bridge tiles along. The bridge
+    // ids (not in `belts`) that deleting `belts` + `machines` would take along:
+    std::vector<int> dependentBridges(const std::vector<int>& belts, const std::vector<int>& machines) const;
+    // Can all of it (with its dependent bridges) be refunded?
+    bool canAffordDeletion(const std::vector<int>& belts, const std::vector<int>& machines) const;
+    // Deletes it with its dependent bridges - all or nothing (inventory space).
+    bool deleteObjects(std::vector<int> belts, const std::vector<int>& machines, ItemAmounts* delta = nullptr);
     bool deleteMachineAt(Vec2i t, ItemAmounts* delta = nullptr);
 
     // Switching a machine's recipe hands its contents back to the player.
@@ -151,8 +173,24 @@ public:
 
     // R when not building: turns the belt, splitter, smelter or assembler at
     // tile t by `steps` quarter turns clockwise. Everything inside stays
-    // (items, filters, recipe); recorded for undo. False: nothing turnable.
-    bool turnAt(Vec2i t, int steps);
+    // (items, filters, recipe); recorded for undo. False: nothing turnable,
+    // or (`noSpace`) a bridge it fed would float and its refund doesn't fit -
+    // otherwise that bridge is deleted with it (refund in `got`).
+    bool turnAt(Vec2i t, int steps, bool* noSpace = nullptr, ItemAmounts* got = nullptr);
+    // Deletes the bridges that are floating now but were supported before
+    // (`supportedBefore`: positions) - all or nothing; false: no space.
+    bool removeNewlyFloating(const std::unordered_set<Vec2i, Vec2iHash>& supportedBefore, ItemAmounts* got, bool dryRun = false);
+    std::unordered_set<Vec2i, Vec2iHash> supportedBridges() const;
+
+    // ---- bridges (see Belt in World.hpp) ----
+    // Always straight: from `start` towards `end` along the longer axis, at
+    // most BRIDGE_MAX_LENGTH tiles; a single tile points `dir`.
+    static std::vector<BeltPlan> planBridge(Vec2i start, Vec2i end, Dir dir);
+    PlacePlan checkBridge(const std::vector<BeltPlan>& plan, bool allowReplace) const;
+    bool placeBridge(const std::vector<BeltPlan>& plan, bool allowReplace, ItemAmounts* delta = nullptr);
+    // the bridge tiles in a row with bridge `id` (same direction)
+    std::vector<int> bridgeRun(int id) const;
+    bool deleteBridgeAt(Vec2i t, bool whole, ItemAmounts* delta = nullptr);
 
     // ---- belts ----
     std::vector<Vec2i> dragTiles(Vec2i start, Vec2i end, Dir placementDir) const;
@@ -163,7 +201,8 @@ public:
     bool anyBeltTileOnWater(const std::vector<BeltPlan>& plan) const;
     bool isDragTileBlocked(const BeltPlan& p, Vec2i start, bool othersOk, bool allowReplace) const;
     bool anyDragTileBlocked(const std::vector<BeltPlan>& plan, Vec2i start, bool allowReplace) const;
-    PlaceStatus beltAffordability(const std::vector<BeltPlan>& plan, ItemAmounts* cost = nullptr) const;
+    PlaceStatus beltAffordability(const std::vector<BeltPlan>& plan, ItemAmounts* cost = nullptr, ItemAmounts* refund = nullptr,
+                                  PlacePlan* planOut = nullptr) const;
     // Per tile "can afford so far" flags for the drag preview.
     std::vector<bool> runningAffordability(const std::vector<BeltPlan>& plan) const;
     bool placeBelts(Vec2i start, Vec2i end, Dir placementDir, bool allowReplace, ItemAmounts* delta = nullptr);
@@ -175,6 +214,8 @@ public:
         PlaceStatus status = PlaceStatus::Ok;
         std::vector<PlaceStatus> belts, machines;   // per entity: Ok / Blocked / NoOre
         ItemAmounts cost;                           // only what is new
+        ItemAmounts refund;                         // what replacing gives back
+        std::vector<int> removeBelts, removeMachines;   // what it takes away (see checkMachine)
     };
     BlueprintCheck checkBlueprint(const Blueprint& bp, Vec2i topLeft, bool allowReplace = false) const;
     // All or nothing: needs free tiles (or identical objects, or Shift),
@@ -186,7 +227,9 @@ public:
     // added (refunding them with their contents) and puts back what it
     // removed or changed, with the contents they had (paying for them).
     // All or nothing - never creates or loses items.
-    enum class UndoResult { Ok, Nothing, Changed, Blocked, PlayerInTheWay, NoFunds, NoSpace };
+    // Floating: a bridge it brings back would be left in the air. Bridges it
+    // leaves in the air (their belt / machine goes) go too, refunded.
+    enum class UndoResult { Ok, Nothing, Changed, Blocked, PlayerInTheWay, NoFunds, NoSpace, Floating };
     // `inverse` gets the record that takes this undo back again (redo).
     UndoResult undo(const UndoRecord& rec, ItemAmounts* delta = nullptr, UndoRecord* inverse = nullptr);
 
@@ -198,7 +241,8 @@ public:
     // otherwise the landfill (10 limestone per tile) - but only if all of it
     // fits into the inventory. `refunded` gets the items, `removed` counts
     // objects or landfill tiles.
-    AreaDelete deleteArea(Vec2i a, Vec2i b, ItemAmounts* refunded = nullptr, int* removed = nullptr);
+    // Only on `layers` (gatherContent with SelectRule::ObjectsFirst).
+    AreaDelete deleteArea(Vec2i a, Vec2i b, ItemAmounts* refunded = nullptr, int* removed = nullptr, Layers layers = Layers::Ground);
 
     std::vector<int> connectedBelts(int beltId) const;
     bool canAffordBeltDeletion(const std::vector<int>& ids) const;

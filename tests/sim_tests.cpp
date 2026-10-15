@@ -327,16 +327,17 @@ static void testOutputSides() {
         bp.machines[0].dir = Dir::Down;   // bottom + right -> bottom + left = Left
         CHECK(mirrored(bp).machines[0].dir == Dir::Left, "mirrored blueprint (Down): %s", dirName(mirrored(bp).machines[0].dir));
     }
-    // placing over a smelter turned another way: blocked, Shift turns it in place (keeping its items)
+    // placing over a smelter turned another way turns it in place (keeping its items) - no Shift needed
     {
         World w; w.seed = 1;
         Player p; p.setCenter(-5000, -5000);
         Builder b(w, p);
         int id = w.addMachine(makeMachine(MachineType::Smelter, {0, 0}));
         w.machine(id).inputs[0].inv.tryAdd(w.machine(id).inputs[0].item, 4);
-        CHECK(b.placeMachine(MachineType::Smelter, {1, 1}, Dir::Down, false, nullptr) < 0, "placing a turned smelter over one was allowed");
-        int kept = b.placeMachine(MachineType::Smelter, {1, 1}, Dir::Down, true, nullptr);
-        CHECK(kept == id && w.machine(id).dir == Dir::Down && total(w.machine(id).contents()) == 4, "Shift did not turn it in place");
+        int kept = b.placeMachine(MachineType::Smelter, {1, 1}, Dir::Down, false, nullptr);
+        CHECK(kept == id && w.machine(id).dir == Dir::Down && total(w.machine(id).contents()) == 4, "not turned in place");
+        kept = b.placeMachine(MachineType::Smelter, {1, 1}, Dir::Up, true, nullptr);
+        CHECK(kept == id && w.machine(id).dir == Dir::Up && total(w.machine(id).contents()) == 4, "Shift did not turn it in place");
     }
     // R on a placed smelter: turns it, keeps its items, undo turns it back
     {
@@ -585,13 +586,14 @@ static void testPickUpUnderPlayer() {
 static std::map<ItemId, int> worldValue(World& w, Player& p) {
     std::map<ItemId, int> v = asMap(w.countItems());
     for (auto& s : p.inventory.contents()) v[s.first] += s.second;
-    for (auto& b : w.belts()) if (b.alive) for (auto& c : beltBuildCost()) v[c.first] += c.second;
+    for (auto& b : w.belts()) if (b.alive) for (auto& c : beltCost(b.bridge)) v[c.first] += c.second;
     for (size_t i = 0; i < w.machineSlots(); ++i)
         if (w.machineAlive(int(i))) for (auto& c : machineSpec(w.machine(int(i)).type).cost) v[c.first] += c.second;
     for (size_t i = 0; i < w.landfill().size(); ++i) for (auto& c : landfillTileCost()) v[c.first] += c.second;
     return v;
 }
 
+static unsigned g_fuzzSeed = 7;
 static void testConservationFuzz() {
     World w;
     w.seed = 12345;
@@ -604,7 +606,7 @@ static void testConservationFuzz() {
     makeSourceStorage(w, {-2, 0}, COPPER_ORE, 300);
     auto start = worldValue(w, p);
 
-    std::mt19937 rng(7);
+    std::mt19937 rng(g_fuzzSeed);
     auto rnd = [&](int lo, int hi) { return std::uniform_int_distribution<int>(lo, hi)(rng); };
     int built = 0, deleted = 0, undone = 0;
     w.recordChanges = true;          // and undo things at random
@@ -615,12 +617,19 @@ static void testConservationFuzz() {
         bool shift = rnd(0, 3) == 0;
         if (op <= 2) {
             Vec2i e{t.x + rnd(-6, 6), t.y + rnd(-6, 6)};
-            if (b.placeBelts(t, e, Dir(rnd(0, 3)), shift)) ++built;
+            if (rnd(0, 2) == 0) {   // bridges too: mostly right after a belt (they can't float)
+                auto plan = Builder::planBridge(t, e, Dir(rnd(0, 3)));
+                if (rnd(0, 3) != 0) b.placeBelts(t - dirVec(plan[0].dir), t - dirVec(plan[0].dir), plan[0].dir, shift);
+                if (b.placeBridge(plan, shift)) ++built;
+            }
+            else if (b.placeBelts(t, e, Dir(rnd(0, 3)), shift)) ++built;
         } else if (op <= 4) {
             MachineType types[] = {MachineType::Smelter, MachineType::Assembler, MachineType::Splitter, MachineType::Storage};
             if (b.placeMachine(types[rnd(0, 3)], t, Dir(rnd(0, 3)), shift, nullptr) >= 0) ++built;
         } else if (op <= 6) {
-            if (b.deleteMachineAt(t) || b.deleteBeltAt(t, shift)) ++deleted;
+            if (rnd(0, 2) == 0 ? b.deleteBridgeAt(t, shift) : (b.deleteMachineAt(t) || b.deleteBeltAt(t, shift))) ++deleted;
+        } else if (op == 7 && rnd(0, 1) == 0) {
+            b.turnAt(t, rnd(0, 1) ? 1 : -1);   // turn whatever is there (bridges it fed may go)
         } else if (op == 7) {
             // switch a recipe somewhere
             Machine* m = w.machineAt(t);
@@ -640,6 +649,15 @@ static void testConservationFuzz() {
         // could: compare in "ore equivalents".
         UndoRecord rec = w.takeRecord();
         if (!rec.empty()) undoStack.push_back(std::move(rec));
+        if (!w.floatingBridges().empty()) {
+            CHECK(false, "a bridge floats at step %d (op %d)", step, op);
+            return;
+        }
+        for (auto& kv : w.bridges())
+            if (w.machineIdAt(kv.first) >= 0 || w.bridgeRunLength(kv.first, w.belt(kv.second).dir) > BRIDGE_MAX_LENGTH) {
+                CHECK(false, "bad bridge at %d,%d at step %d (op %d)", kv.first.x, kv.first.y, step, op);
+                return;
+            }
         auto now = worldValue(w, p);
         auto eq = [](std::map<ItemId, int> m) {
             m[COPPER_ORE] += 3 * m[COPPER_INGOT];
@@ -653,7 +671,8 @@ static void testConservationFuzz() {
         }
     }
     ++g_passed;
-    std::printf("  conservation fuzz: %d builds, %d deletes, %d undos, 6000 steps, no item created or lost\n", built, deleted, undone);
+    std::printf("  conservation fuzz: %d builds, %d deletes, %d undos, 6000 steps, no item created or lost (%zu bridges at the end)\n", built, deleted,
+                undone, w.bridges().size());
     CHECK(undone > 50, "fuzz should undo things (%d)", undone);
 }
 
@@ -1125,6 +1144,283 @@ static void testLandfillSelection() {
     std::printf("  landfill: Copy / Delete area take things first, landfill only alone; blueprints everything; deleting refunds limestone\n");
 }
 
+// Bridges: a belt layer above the ground. They cross belts without touching
+// them, connect only straight, are at most BRIDGE_MAX_LENGTH long, can go on
+// water but not on machines, and are saved / undone like belts.
+static void testBridges() {
+    // 1) a bridge line crossing a belt line: both deliver everything, nothing mixes
+    {
+        World w; w.seed = 1;
+        makeSourceStorage(w, {-2, 0}, IRON_INGOT, 60);   // x -2..-1, y 0..1
+        w.addBelt({0, 0}, Dir::Right);
+        for (int x = 1; x <= 4; ++x) w.addBridge({x, 0}, Dir::Right);
+        w.addBelt({5, 0}, Dir::Right);
+        int sinkA = makeSinkStorage(w, {6, 0});
+        makeSourceStorage(w, {2, -4}, COAL, 60);        // x 2..3, y -4..-3
+        line(w, {2, -2}, Dir::Down, 5);                  // y -2..2, crosses under the bridge at (2,0)
+        int sinkB = makeSinkStorage(w, {2, 3});
+        auto before = asMap(w.countItems());
+        for (int t = 0; t < 60 * 20 + 400; ++t) w.tick();
+        CHECK(w.machine(sinkA).storage.amount(IRON_INGOT) == 60 && w.machine(sinkA).storage.amount(COAL) == 0,
+              "over the bridge: %d iron, %d coal", w.machine(sinkA).storage.amount(IRON_INGOT), w.machine(sinkA).storage.amount(COAL));
+        CHECK(w.machine(sinkB).storage.amount(COAL) == 60 && w.machine(sinkB).storage.amount(IRON_INGOT) == 0,
+              "under the bridge: %d coal, %d iron", w.machine(sinkB).storage.amount(COAL), w.machine(sinkB).storage.amount(IRON_INGOT));
+        CHECK(asMap(w.countItems()) == before, "bridge crossing changed item totals");
+    }
+    // 2) only straight: a belt pointing sideways at a bridge doesn't feed it,
+    //    a bridge ending next to a belt that doesn't point its way doesn't feed it
+    {
+        World w; w.seed = 1;
+        int b0 = w.addBridge({0, 0}, Dir::Right);
+        w.addBridge({1, 0}, Dir::Right);
+        w.addBelt({0, -1}, Dir::Down);    // points down into the bridge's first tile: sideways
+        w.addBelt({2, 0}, Dir::Down);     // in front of the bridge's end, pointing down
+        w.addBelt({-1, 0}, Dir::Right);   // straight in
+        w.ensureTopology();
+        CHECK(w.belt(b0).incomingMask == dirBit(Dir::Right), "bridge mask %d (only straight from behind)", int(w.belt(b0).incomingMask));
+        CHECK(w.bridgeAt({1, 0})->frontRef == 0, "bridge feeds a belt that doesn't point its way");
+        CHECK(w.beltAt({2, 0})->incomingMask == 0 || !(w.beltAt({2, 0})->incomingMask & dirBit(Dir::Right)), "belt fed sideways by a bridge");
+    }
+    // 3) splitter -> bridge over a belt line -> chest
+    {
+        World w; w.seed = 1;
+        makeSourceStorage(w, {-3, 10}, IRON_INGOT, 30);  // x -3..-2, y 10..11
+        w.addBelt({-1, 10}, Dir::Right);
+        w.addMachine(makeMachine(MachineType::Splitter, {0, 10}, Dir::Right));   // left side = up
+        for (int y = 9; y >= 7; --y) w.addBridge({0, y}, Dir::Up);
+        line(w, {-2, 8}, Dir::Right, 5);                 // passes under at (0,8)
+        int sink = makeSinkStorage(w, {0, 5});           // x 0..1, y 5..6: the bridge ends into it
+        for (int t = 0; t < 60 * 20 + 400; ++t) w.tick();
+        CHECK(w.machine(sink).storage.amount(IRON_INGOT) == 30, "splitter -> bridge -> chest: %d of 30", w.machine(sink).storage.amount(IRON_INGOT));
+    }
+    // 4) building: costs, max length, water, machines, undo, saves
+    {
+        save::setSavesDir("test_saves");
+        World w; Player p; CameraState cam;
+        save::newGame(w, p, cam, "bridges");
+        p.setCenter(-5000, -5000);   // out of the way
+        p.inventory.tryAdd(IRON_INGOT, 800);
+        p.inventory.tryAdd(COPPER_INGOT, 400);
+        Builder b(w, p);
+        CHECK(Builder::planBridge({0, 0}, {9, 2}, Dir::Up).size() == size_t(BRIDGE_MAX_LENGTH), "bridge plan longer than the maximum");
+        CHECK(Builder::planBridge({0, 0}, {0, -2}, Dir::Right)[0].dir == Dir::Up, "bridge plan direction");
+        b.placeBelts({0, 0}, {6, 0}, Dir::Right, false);
+        CHECK(b.checkBridge(Builder::planBridge({2, -1}, {2, 2}, Dir::Down), false).status == PlaceStatus::Unconnected, "floating bridge allowed");
+        b.placeBelts({2, -2}, {2, -2}, Dir::Down, false);   // feeds the bridge
+        auto before = worldValue(w, p);
+        ItemAmounts d;
+        CHECK(b.placeBridge(Builder::planBridge({2, -1}, {2, 2}, Dir::Down), false, &d) && asMap(d)[IRON_INGOT] == -80, "4 bridges over a belt");
+        CHECK(worldValue(w, p) == before, "placing bridges changed item totals");
+        CHECK(w.bridgeRunLength({2, 0}, Dir::Down) == 4 && w.beltAt({2, 0}) != nullptr, "bridge over the belt");
+        CHECK(b.checkBridge(Builder::planBridge({2, 3}, {2, 3}, Dir::Down), false).status == PlaceStatus::TooLong, "5th bridge in a row allowed");
+        CHECK(b.checkBridge(Builder::planBridge({2, 3}, {2, 3}, Dir::Left), false).status == PlaceStatus::Unconnected, "a new bridge needs a feeder");
+        CHECK(b.checkBridge(Builder::planBridge({1, 0}, {1, 0}, Dir::Right), false).status == PlaceStatus::Ok, "bridge after a belt (over a belt)");
+        {   // a bridge pointing away from a chest / a splitter side is connected, one pointing into it isn't
+            b.placeMachine(MachineType::Storage, {20, 20}, Dir::Right, false, nullptr);   // (centred) 19..20
+            CHECK(b.checkBridge(Builder::planBridge({21, 20}, {21, 20}, Dir::Right), false).status == PlaceStatus::Ok, "bridge from a chest");
+            CHECK(b.checkBridge(Builder::planBridge({21, 20}, {21, 20}, Dir::Up), false).status == PlaceStatus::Unconnected, "bridge beside a chest");
+            // a blueprint with the feeding belt in it is fine
+            Blueprint fed;
+            fed.belts.push_back({{0, 0}, Dir::Right, {}, 0, false});
+            fed.belts.push_back({{1, 0}, Dir::Right, {}, 0, true});
+            fed.w = 2; fed.h = 1;
+            CHECK(b.checkBlueprint(fed, {30, 30}).status == PlaceStatus::Ok, "blueprint with belt + bridge");
+            Blueprint floating = fed; floating.belts.erase(floating.belts.begin());
+            CHECK(b.checkBlueprint(floating, {30, 30}).status == PlaceStatus::Unconnected, "blueprint with a floating bridge");
+        }
+        b.placeMachine(MachineType::Storage, {8, 4}, Dir::Right, false, nullptr);
+        CHECK(b.checkBridge(Builder::planBridge({8, 4}, {8, 4}, Dir::Right), false).status == PlaceStatus::Blocked, "bridge on a chest");
+        CHECK(b.checkMachine(MachineType::Splitter, {2, 1}, Dir::Right, false) == PlaceStatus::Blocked, "splitter under a bridge");
+        // water: belts no, bridges yes (fed by a belt on the shore)
+        Vec2i water{0, 0};
+        bool found = false;
+        for (int y = -300; y < 300 && !found; ++y)
+            for (int x = -300; x < 300 && !found; ++x)
+                if (w.isWater({x, y}) && !w.isWater({x - 1, y}) && !w.isCellBlocked({x - 1, y})) { water = {x, y}; found = true; }
+        if (found) {
+            b.placeBelts(water - Vec2i{1, 0}, water - Vec2i{1, 0}, Dir::Right, false);
+            CHECK(b.checkBridge(Builder::planBridge(water, water, Dir::Right), false).status == PlaceStatus::Ok, "bridge on water refused");
+            b.deleteBeltAt(water - Vec2i{1, 0}, false);
+        }
+        // undo a deletion
+        w.recordChanges = true;
+        w.takeRecord();
+        CHECK(b.deleteBridgeAt({2, 0}, true, &d) && w.bridges().empty() && w.beltAt({2, 0}), "delete a whole bridge (belt under it stays)");
+        UndoRecord rec = w.takeRecord();
+        CHECK(b.undo(rec) == Builder::UndoResult::Ok && w.bridgeRunLength({2, 0}, Dir::Down) == 4, "undo of a bridge deletion");
+        w.recordChanges = false;
+        // area delete: one layer at a time
+        int n = 0;
+        CHECK(b.deleteArea({1, 2}, {3, 2}, nullptr, &n, Layers::Bridges) == Builder::AreaDelete::Ok && n == 1 && w.bridges().size() == 3,
+              "bridge layer area delete: %d", n);
+        CHECK(worldValue(w, p) == before, "bridge deletions changed item totals");
+        // saved and loaded; copied into blueprints
+        Blueprint bp = captureBlueprint(w, {2, 1}, {2, 1});
+        CHECK(bp.belts.size() == 1 && bp.belts[0].bridge, "blueprint lost the bridge");
+        // layers: the belt at (2,0) and the bridge over it
+        CHECK(captureBlueprint(w, {2, -2}, {2, 2}, SelectRule::ObjectsFirst, Layers::Ground).belts.size() == 2 &&
+                  captureBlueprint(w, {2, -2}, {2, 2}, SelectRule::ObjectsFirst, Layers::Bridges).belts.size() == 3 &&
+                  captureBlueprint(w, {2, -2}, {2, 2}, SelectRule::ObjectsFirst, Layers::All).belts.size() == 5,
+              "copy by layers");
+        w.bridgeAt({2, 1})->item = COAL;
+        CHECK(save::saveGame(w, p, cam, "bridges"), "save failed");
+        World w2; Player p2; CameraState c2;
+        CHECK(save::loadGame(w2, p2, c2, "bridges") && w2.bridgeAt({2, 1}) && w2.bridgeAt({2, 1})->item == COAL && w2.beltAt({2, 0}),
+              "bridge not kept when loading");
+        save::remove("bridges");
+    }
+    // 5) deleting what a bridge needs takes the bridge along (all or nothing)
+    {
+        World w; w.seed = 1;
+        Player p; p.setCenter(-5000, -5000);
+        p.inventory.tryAdd(IRON_INGOT, 600);
+        p.inventory.tryAdd(COPPER_INGOT, 300);
+        Builder b(w, p);
+        b.placeBelts({0, 5}, {0, 5}, Dir::Right, false);
+        CHECK(b.placeBridge(Builder::planBridge({1, 5}, {3, 5}, Dir::Right), false), "bridge after a belt");
+        b.placeBelts({4, 5}, {4, 5}, Dir::Right, false);
+        w.bridgeAt({2, 5})->item = COAL;
+        auto before = worldValue(w, p);
+        CHECK(b.dependentBridges({w.beltIdAt({0, 5})}, {}).size() == 3, "the feeding belt carries 3 bridge tiles");
+        CHECK(b.dependentBridges({w.bridgeIdAt({1, 5})}, {}).size() == 2, "a bridge tile carries the 2 in front of it");
+        CHECK(b.dependentBridges({w.beltIdAt({4, 5})}, {}).empty(), "the belt after a bridge carries nothing");
+        // no space: nothing happens
+        {
+            Player full; full.setCenter(-5000, -5000);
+            for (int i = 0; i < 45; ++i) full.inventory.tryAdd(IRON_ORE, 100);
+            Builder fb(w, full);
+            CHECK(!fb.deleteBeltAt({0, 5}, false) && w.beltAt({0, 5}) && w.bridges().size() == 3, "deleted without inventory space");
+        }
+        w.recordChanges = true;
+        w.takeRecord();
+        ItemAmounts d;
+        CHECK(b.deleteBridgeAt({2, 5}, false, &d) && w.bridgeAt({1, 5}) && !w.bridgeAt({2, 5}) && !w.bridgeAt({3, 5}) && p.inventory.amount(COAL) == 1,
+              "middle bridge tile: the rest in front goes too");
+        CHECK(worldValue(w, p) == before, "dependent bridge deletion changed item totals");
+        UndoRecord rec = w.takeRecord();
+        CHECK(b.undo(rec) == Builder::UndoResult::Ok && w.bridges().size() == 3, "undo brings the whole bridge back");
+        w.takeRecord();
+        CHECK(b.deleteBeltAt({0, 5}, false) && w.bridges().empty() && w.beltAt({4, 5}), "feeding belt: the bridge goes too");
+        CHECK(worldValue(w, p) == before, "feeder deletion changed item totals");
+        // a chest feeding a bridge; area delete on the ground layer
+        b.placeMachine(MachineType::Storage, {11, 11}, Dir::Right, false, nullptr);   // 10..11
+        CHECK(b.placeBridge(Builder::planBridge({12, 10}, {14, 10}, Dir::Right), false), "bridge from a chest");
+        int n = 0;
+        CHECK(b.deleteArea({10, 10}, {11, 11}, nullptr, &n, Layers::Ground) == Builder::AreaDelete::Ok && n == 4 && w.bridges().empty(),
+              "chest area delete took %d (chest + 3 bridge tiles)", n);
+        CHECK(worldValue(w, p) == before, "area deletion changed item totals");
+        w.recordChanges = false;
+    }
+    // 6) turning, Shift-replacing and undoing never leave a bridge in the air
+    {
+        World w; w.seed = 1;
+        Player p; p.setCenter(-5000, -5000);
+        p.inventory.tryAdd(IRON_INGOT, 900);
+        p.inventory.tryAdd(COPPER_INGOT, 400);
+        Builder b(w, p);
+        auto feedLine = [&](Vec2i at) {   // belt + 2 bridge tiles to the right
+            b.placeBelts(at, at, Dir::Right, false);
+            return b.placeBridge(Builder::planBridge(at + Vec2i{1, 0}, at + Vec2i{2, 0}, Dir::Right), false);
+        };
+        auto before = worldValue(w, p);
+        CHECK(feedLine({0, 0}), "line 1");
+        // no space: the belt can't be turned
+        {
+            Player full; full.setCenter(-5000, -5000);
+            for (int i = 0; i < 45; ++i) full.inventory.tryAdd(IRON_ORE, 100);
+            Builder fb(w, full);
+            bool noSpace = false;
+            CHECK(!fb.turnAt({0, 0}, 1, &noSpace) && noSpace && w.beltAt({0, 0})->dir == Dir::Right && w.bridges().size() == 2, "turned without space");
+        }
+        ItemAmounts got;
+        CHECK(b.turnAt({0, 0}, 1, nullptr, &got) && w.beltAt({0, 0})->dir == Dir::Down && w.bridges().empty() && asMap(got)[IRON_INGOT] == 40,
+              "turning the feeding belt takes the bridge");
+        CHECK(worldValue(w, p) == before, "turning changed item totals");
+        // Shift: a belt turned in place by placing over it
+        b.turnAt({0, 0}, -1);
+        CHECK(b.placeBridge(Builder::planBridge({1, 0}, {2, 0}, Dir::Right), false), "bridge again");
+        {
+            PlacePlan pp;
+            b.beltAffordability(b.planBelts({0, 0}, {0, 0}, Dir::Up), nullptr, nullptr, &pp);
+            CHECK(b.bridgesAmong(pp.removeBelts).size() == 2 && pp.removeBelts.size() == 2, "the cost check names %zu things to mark red (expected 2)",
+                  pp.removeBelts.size());
+        }
+        CHECK(b.placeBelts({0, 0}, {0, 0}, Dir::Up, true) && w.beltAt({0, 0})->dir == Dir::Up && w.bridges().empty(), "Shift-turned belt takes the bridge");
+        // bridges turn in place without Shift - only if they still hold up
+        CHECK(b.turnAt({0, 0}, 1) && w.beltAt({0, 0})->dir == Dir::Right, "belt back to the right");   // (it pointed up)
+        b.placeBelts({2, -1}, {2, -1}, Dir::Down, false);    // a belt above the 2nd tile, pointing down into it
+        CHECK(b.placeBridge(Builder::planBridge({1, 0}, {2, 0}, Dir::Right), false), "bridge for turning");
+        CHECK(b.checkBridge(Builder::planBridge({1, 0}, {1, 0}, Dir::Up), false).status == PlaceStatus::Unconnected,
+              "turned bridge without a feeder in its new direction");
+        int idTurn = w.bridgeIdAt({2, 0});
+        CHECK(b.placeBridge(Builder::planBridge({2, 0}, {2, 0}, Dir::Down), false) && w.bridgeIdAt({2, 0}) == idTurn &&
+                  w.belt(idTurn).dir == Dir::Down,
+              "bridge turned in place (fed from the belt above)");
+        CHECK(w.floatingBridges().empty(), "something floats after turning a bridge");
+        b.deleteBridgeAt({1, 0}, true);
+        b.deleteBridgeAt({2, 0}, true);
+        b.deleteBeltAt({2, -1}, false);
+        CHECK(worldValue(w, p) == before, "bridge turns changed item totals");
+        // a machine replaced with Shift (an assembler outputs right + up)
+        b.placeMachine(MachineType::Assembler, {11, 11}, Dir::Right, false, nullptr);   // 10..12
+        CHECK(b.placeBridge(Builder::planBridge({13, 11}, {14, 11}, Dir::Right), false), "bridge from an assembler output side");
+        CHECK(b.placeMachine(MachineType::Assembler, {11, 11}, Dir::Left, true, nullptr) >= 0 && w.bridges().empty(),
+              "turning the assembler's outputs away takes the bridge");
+        CHECK(b.placeBridge(Builder::planBridge({9, 11}, {8, 11}, Dir::Left), false), "bridge from the turned assembler");
+        CHECK(b.turnAt({11, 11}, 2) && w.bridges().empty(), "R on the assembler takes the bridge");
+        CHECK(worldValue(w, p) == before, "machine turns changed item totals");
+        // undo: taking back the belt under a bridge built later takes the bridge (refunded)
+        w.recordChanges = true;
+        w.takeRecord();
+        b.placeBelts({0, 20}, {0, 20}, Dir::Right, false);
+        UndoRecord beltRec = w.takeRecord();
+        CHECK(b.placeBridge(Builder::planBridge({1, 20}, {2, 20}, Dir::Right), false), "line 3");
+        w.takeRecord();
+        CHECK(b.undo(beltRec) == Builder::UndoResult::Ok && !w.beltAt({0, 20}) && w.bridges().empty(), "undo of the feeding belt");
+        CHECK(worldValue(w, p) == before, "undo with a bridge changed item totals");
+        // a bridge brought back by undo without its belt would float: refused
+        CHECK(feedLine({0, 30}), "line 4");
+        w.takeRecord();
+        b.deleteBridgeAt({1, 30}, true);
+        UndoRecord bridgeRec = w.takeRecord();
+        b.deleteBeltAt({0, 30}, false);
+        w.takeRecord();
+        auto mid = worldValue(w, p);
+        CHECK(b.undo(bridgeRec) == Builder::UndoResult::Floating && w.bridges().empty() && worldValue(w, p) == mid, "undo brought back a floating bridge");
+        w.recordChanges = false;
+        CHECK(w.floatingBridges().empty(), "something floats");
+        // loading a save with a floating bridge: it goes into the inventory
+        save::setSavesDir("test_saves");
+        CameraState cam;
+        w.addBridge({50, 50}, Dir::Up);
+        CHECK(save::saveGame(w, p, cam, "floating"), "save failed");
+        World l; Player lp; CameraState lc;
+        CHECK(save::loadGame(l, lp, lc, "floating") && l.bridges().empty() && lp.inventory.amount(IRON_INGOT) == p.inventory.amount(IRON_INGOT) + 20,
+              "floating bridge kept when loading");
+        save::remove("floating");
+    }
+    std::printf("  bridges: cross belts untouched, straight only, max %d long, on water, undo, saved\n", BRIDGE_MAX_LENGTH);
+}
+
+// The "Cost / Change" box: Shift-replacing a belt with a chest is paid by the belt's refund.
+static void testReplaceRefund() {
+    World w; w.seed = 1;
+    Player p; p.setCenter(-5000, -5000);
+    p.inventory.tryAdd(IRON_INGOT, 19);
+    p.inventory.tryAdd(COPPER_INGOT, 5);
+    Builder b(w, p);
+    CHECK(b.placeBelts({0, 0}, {0, 0}, Dir::Right, false), "belt");   // 10 iron + 5 copper: 9 iron left
+    ItemAmounts cost, refund;
+    PlaceStatus st = b.checkMachine(MachineType::Storage, {1, 1}, Dir::Right, true, &cost, &refund);   // chest on 0..1
+    CHECK(st == PlaceStatus::Ok && asMap(cost)[IRON_INGOT] == 10 && asMap(refund)[IRON_INGOT] == 10 && asMap(refund)[COPPER_INGOT] == 5,
+          "chest over a belt with 9 iron: status %d, cost %d, refund %d iron %d copper", int(st), asMap(cost)[IRON_INGOT],
+          asMap(refund)[IRON_INGOT], asMap(refund)[COPPER_INGOT]);
+    CHECK(b.placeMachine(MachineType::Storage, {1, 1}, Dir::Right, true, nullptr) >= 0 && p.inventory.amount(IRON_INGOT) == 9 &&
+              p.inventory.amount(COPPER_INGOT) == 5,
+          "after: %d iron, %d copper", p.inventory.amount(IRON_INGOT), p.inventory.amount(COPPER_INGOT));
+    std::printf("  replacing: the cost box counts what comes back\n");
+}
+
 static bool itemDeltaEmpty(const ItemAmounts& d) {
     for (auto& x : d) if (x.second != 0) return false;
     return true;
@@ -1148,12 +1444,13 @@ static void testPlaceInPlace() {
     CHECK(itemDeltaEmpty(d) && w.machine(sm).inputs[0].inv.amount(in->item) == 7 && worldValue(w, p) == v0, "same machine changed items");
     // a different machine there: blocked without Shift
     CHECK(b.placeMachine(MachineType::Assembler, {5, 5}, Dir::Right, false, nullptr) < 0, "different machine should block");
-    // splitter turned with Shift: same object, keeps its item
+    // splitter turned in place (with or without Shift): same object, keeps its item
     int sp = b.placeMachine(MachineType::Splitter, {20, 5}, Dir::Right, false, nullptr);
     w.machine(sp).item = IRON_ORE;
-    CHECK(b.placeMachine(MachineType::Splitter, {20, 5}, Dir::Down, false, nullptr) < 0, "turned splitter needs Shift");
-    CHECK(b.placeMachine(MachineType::Splitter, {20, 5}, Dir::Down, true, nullptr) == sp && w.machine(sp).dir == Dir::Down &&
+    CHECK(b.placeMachine(MachineType::Splitter, {20, 5}, Dir::Down, false, nullptr) == sp && w.machine(sp).dir == Dir::Down &&
           w.machine(sp).item == IRON_ORE, "splitter not turned in place / item lost");
+    CHECK(b.placeMachine(MachineType::Splitter, {20, 5}, Dir::Left, true, nullptr) == sp && w.machine(sp).dir == Dir::Left &&
+          w.machine(sp).item == IRON_ORE, "Shift: splitter not turned in place / item lost");
     // belts turned with Shift keep their item and cost nothing
     b.placeBelts({0, 10}, {4, 10}, Dir::Right, false);
     w.beltAt({2, 10})->item = COAL;
@@ -1268,12 +1565,14 @@ int main(int argc, char** argv) {
     testPickUpUnderPlayer();
     testHandCraftingAndRecipeSwitch();
     std::printf("Item conservation\n");
-    testConservationFuzz();
+    for (unsigned seed : {7u, 11u, 23u}) { g_fuzzSeed = seed; testConservationFuzz(); }   // (a few different runs)
     testUndo();
     testBlueprintTransform();
     testBlueprints();
     testAreaDelete();
     testLandfillSelection();
+    testReplaceRefund();
+    testBridges();
     testItemDeltas();
     testSelectionLimit();
     testPlaceInPlace();
