@@ -569,6 +569,7 @@ void GameScreen::drawBlueprintMode() {
         Rectangle r{float(p.x * CELL_SIZE), float(p.y * CELL_SIZE), CELL_SIZE, CELL_SIZE};
         bool wet = world_.isExplored(floorDiv(p.x, CHUNK_SIZE), floorDiv(p.y, CHUNK_SIZE)) && world_.isWater(p);
         DrawRectangleRec(r, wet ? Color{96, 76, 52, 190} : Color{96, 76, 52, 70});
+        itemTint(r);   // not enough limestone / space: yellow / orange like the rest
     }
     for (size_t i = 0; i < placing_.belts.size(); ++i) {
         const BlueprintBelt& b = placing_.belts[i];

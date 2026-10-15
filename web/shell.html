@@ -8,102 +8,22 @@
   html, body { margin: 0; padding: 0; height: 100%; overflow: hidden; background: #000; }
   canvas { display: block; outline: none; }
   #status { position: absolute; left: 20px; top: 20px; color: #ddd; font: 18px sans-serif; }
-  /* hidden field for the phone keyboard (16px: iOS doesn't zoom in) */
-  #kbdForm { position: fixed; left: 0; top: 0; width: 1px; height: 1px; margin: 0; overflow: hidden; opacity: 0; pointer-events: none; }
-  #kbd { font-size: 16px; width: 1px; height: 1px; border: 0; padding: 0; }
 </style>
 </head>
 <body>
 <div id="status">Loading the game...</div>
 <canvas id="canvas" tabindex="1"></canvas>
-<form id="kbdForm" action="#"><input id="kbd" type="text" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" enterkeyhint="done"></form>
 <script>
   var canvas = document.getElementById('canvas');
   // right click is used by the game, not for the browser menu
   canvas.addEventListener('contextmenu', function (e) { e.preventDefault(); });
   // keep keyboard input in the game (Tab, Alt, ...) and stop middle-click autoscroll
-  // (not right after a touch: that would close the phone keyboard again)
-  var lastTouch = 0;
-  canvas.addEventListener('mousedown', function (e) {
-    if (Date.now() - lastTouch > 1000) canvas.focus();
-    if (e.button === 1) e.preventDefault();
-  });
-
-  // ---- phone / tablet keyboard (see "On-screen keyboard" in src/game/Ui.cpp) ----
-  // The game draws its text fields on the canvas, which can't open the
-  // on-screen keyboard. A tap on a text field focuses this hidden input
-  // instead; what is typed is queued for
-  // the game: text as codepoints, keys as -(raylib key).
-  var kbd = document.getElementById('kbd');
-  var KEYS = { Backspace: 259, Delete: 261, ArrowLeft: 263, ArrowRight: 262, Enter: 257, Escape: 256 };
-  var SENTINEL = '_';      // always in front, so Backspace on an "empty" field still arrives
-  var sent = '';           // what the game already got of the word being typed
-  var focusedAt = 0;
-  function queue(v) { (Module.kbdQueue = Module.kbdQueue || []).push(v); }
-  function resetKbd() { kbd.value = SENTINEL; sent = ''; try { kbd.setSelectionRange(1, 1); } catch (e) {} }
-  function sendText(t) { for (var c of t) queue(c.codePointAt(0)); }
-  function sync(composing) {
-    var v = kbd.value;
-    if (v.charAt(0) !== SENTINEL) {      // the sentinel itself was deleted: one Backspace
-      for (var i = 0; i <= sent.length; ++i) queue(-KEYS.Backspace);
-      sendText(v); sent = ''; resetKbd(); return;
-    }
-    var cur = v.slice(1), p = 0;         // the IME may rewrite the word: send only the difference
-    while (p < cur.length && p < sent.length && cur[p] === sent[p]) ++p;
-    for (var j = p; j < sent.length; ++j) queue(-KEYS.Backspace);
-    sendText(cur.slice(p));
-    sent = cur;
-    if (!composing) resetKbd();
-  }
-  kbd.addEventListener('input', function (e) { sync(e.isComposing); });
-  kbd.addEventListener('compositionend', function () { sync(false); });
-  // While the hidden input has the focus the game gets keys only through the
-  // queue: raylib's own (GLFW) key listeners sit on window in the capture
-  // phase, so these are registered there too, before the game starts, and
-  // stop them (typing would arrive twice and Backspace would be swallowed).
-  // Stopping propagation doesn't stop the typing itself.
-  function kbdKey(e) {
-    if (document.activeElement !== kbd) return;
-    e.stopImmediatePropagation();
-    if (e.type !== 'keydown' || e.isComposing) return;
-    var k = KEYS[e.key];
-    if (k) { e.preventDefault(); queue(-k); }
-  }
-  ['keydown', 'keypress', 'keyup'].forEach(function (t) { window.addEventListener(t, kbdKey, true); });
-  document.getElementById('kbdForm').addEventListener('submit', function (e) { e.preventDefault(); queue(-KEYS.Enter); });
-  function overTextField(x, y) {
-    var r = canvas.getBoundingClientRect(), sp = Module.textSpace, f = Module.textFields || [];
-    if (!sp || !r.width || !r.height) return false;
-    var px = (x - r.left) * sp[0] / r.width, py = (y - r.top) * sp[1] / r.height;
-    for (var i = 0; i < f.length; ++i)
-      if (px >= f[i][0] && px <= f[i][0] + f[i][2] && py >= f[i][1] && py <= f[i][1] + f[i][3]) return true;
-    return false;
-  }
-  canvas.addEventListener('touchstart', function () { lastTouch = Date.now(); }, { passive: true });
-  canvas.addEventListener('touchend', function (e) {
-    lastTouch = Date.now();
-    var t = e.changedTouches[0];
-    // must happen right here (inside the tap) or the phone won't show its keyboard
-    if (t && overTextField(t.clientX, t.clientY)) {
-      if (document.activeElement !== kbd) { resetKbd(); kbd.focus({ preventScroll: true }); }
-      focusedAt = Date.now();
-    }
-  }, { passive: true });
-  // every frame (from the game): no text field typing any more -> close the keyboard
-  // (not right after opening it: the tap that activates the field may not be handled yet)
-  function keyboardFrame() {
-    if (!Module.textActive && document.activeElement === kbd && Date.now() - focusedAt > 500) {
-      kbd.blur();
-      canvas.focus({ preventScroll: true });
-    }
-  }
+  canvas.addEventListener('mousedown', function (e) { canvas.focus(); if (e.button === 1) e.preventDefault(); });
   window.addEventListener('keydown', function (e) {
     if (['Tab', 'Alt', 'F1'].indexOf(e.key) >= 0 || (e.ctrlKey && 'bcvx'.indexOf(e.key.toLowerCase()) >= 0)) e.preventDefault();
   });
   var Module = {
     canvas: canvas,
-    kbdQueue: [],
-    keyboardFrame: keyboardFrame,
     setStatus: function (t) { document.getElementById('status').textContent = t; if (!t) document.getElementById('status').style.display = 'none'; },
     onRuntimeInitialized: function () { document.getElementById('status').style.display = 'none'; canvas.focus(); }
   };

@@ -4,6 +4,22 @@
 #include <algorithm>
 #include <cstdio>
 
+#ifdef __EMSCRIPTEN__
+#include <emscripten/emscripten.h>
+// Browser on a phone / tablet: the main pointer is a finger, not a mouse.
+EM_JS(int, touchScreenDevice, (), { return window.matchMedia && window.matchMedia('(pointer: coarse)').matches ? 1 : 0; });
+#endif
+
+// The game needs a mouse and a keyboard: on a phone / tablet the main menu says so.
+static bool onPhone() {
+#ifdef __EMSCRIPTEN__
+    static const bool phone = touchScreenDevice() != 0;
+    return phone;
+#else
+    return false;
+#endif
+}
+
 static const char* INVALID_NAME_MESSAGE = "Save names can only contain letters, numbers, spaces, - and _.";
 
 MainMenu::MainMenu() { refresh(); }
@@ -83,7 +99,7 @@ MenuAction MainMenu::handleRoot(const Event& e) {
 void MainMenu::openNewGame(const std::string& initial) {
     screen_ = Screen::NewGame;
     float w = ui::screenW(), h = ui::screenH();
-    // a free name is filled in, so Start works without typing (phones)
+    // a free name is filled in, so Start works right away
     std::string name = initial;
     if (name.empty()) {
         int n = 1;
@@ -234,6 +250,16 @@ void MainMenu::draw(float dt) {
             const std::string& id = labels[i].first;
             Color c = id == "continue" ? ui::BTN_OK : id == "quit" ? ui::BTN_DANGER : ui::BTN;
             drawButton(r, labels[i].second, c, 20);
+        }
+        if (onPhone()) {   // under the buttons
+            const char* l1 = "This game can't be played on a phone or tablet.";
+            const char* l2 = "It needs a mouse and a keyboard - please use a computer.";
+            float bw = std::max(measure(l1, 20, true).x, measure(l2, 16).x) + 40;
+            Rectangle note = centeredRect(w / 2, top + ph + 30, bw, 64);
+            fillRound(note, 10, ui::PANEL_BG);
+            lineRound(note, 10, 2, ui::BTN_DANGER);
+            textCentered(l1, w / 2, note.y + 20, 20, Color{170, 20, 20, 255}, true);
+            textCentered(l2, w / 2, note.y + 44, 16, ui::TEXT);
         }
     } else if (screen_ == Screen::NewGame) {
         newGamePanel_ = centeredRect(w / 2, h / 2, 420, 200);

@@ -127,8 +127,12 @@ void GameScreen::zoomBy(float factor, Vector2 anchor) {
         }
         return;
     }
+    // the other way while the gate box is showing: this notch only hides
+    // the box (going back shouldn't jump away from the edge right away)
+    bool boxShown = zoomGateActive();
     zoomGate_ = 0;   // zoomed normally / the other way: the run is over
     zoomEdgeSince_ = -1;
+    if (boxShown) return;
     if (!atEdge) setZoomTarget(target, anchor);
 }
 

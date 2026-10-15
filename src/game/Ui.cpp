@@ -5,55 +5,6 @@
 #include <cctype>
 #include <cmath>
 #include <cstdlib>
-#ifdef __EMSCRIPTEN__
-#include <emscripten/emscripten.h>
-#endif
-
-// ---------------------------------------------------------------------------
-// On-screen keyboard (browser on a phone / tablet)
-// ---------------------------------------------------------------------------
-// A canvas can't open a phone's keyboard, so web/shell.html has a hidden
-// <input>: a tap on a text field focuses it (that opens the keyboard),
-// and what is typed there is queued in Module.kbdQueue (text as its
-// codepoint, keys as minus the raylib key). Each frame the game tells the
-// page where its text fields are (real pixels) and whether one is active;
-// the page closes the keyboard when none is.
-namespace {
-#ifdef __EMSCRIPTEN__
-struct FieldRect { float x, y, w, h; bool active; };
-std::vector<FieldRect> g_fields;   // text fields drawn this frame
-
-void publishTextFields() {
-    bool active = false;
-    for (auto& f : g_fields) active |= f.active;
-    EM_ASM({
-        Module.textFields = [];
-        Module.textSpace = new Array($0, $1);   // (no bare commas in EM_ASM: they split the macro)
-        Module.textActive = !!$2;
-        if (Module.keyboardFrame) Module.keyboardFrame();
-    }, GetScreenWidth(), GetScreenHeight(), active ? 1 : 0);
-    for (auto& f : g_fields)
-        EM_ASM({ Module.textFields.push([$0, $1, $2, $3]); }, f.x, f.y, f.w, f.h);
-    g_fields.clear();
-}
-
-// typed on the on-screen keyboard since the last frame
-void pollWebKeyboard(std::vector<Event>& out, Vector2 mouse) {
-    for (;;) {
-        int v = EM_ASM_INT({
-            var q = Module.kbdQueue;
-            return (q && q.length) ? q.shift() : 0;
-        });
-        if (v == 0) break;
-        Event e{v > 0 ? EvType::Text : EvType::KeyDown};
-        if (v > 0) e.codepoint = v;
-        else e.key = -v;
-        e.pos = mouse;
-        out.push_back(e);
-    }
-}
-#endif
-} // namespace
 
 // ---------------------------------------------------------------------------
 // Events
@@ -61,10 +12,6 @@ void pollWebKeyboard(std::vector<Event>& out, Vector2 mouse) {
 std::vector<Event> pollEvents() {
     std::vector<Event> out;
     Vector2 mouse = ui::mouse();   // UI coordinates
-#ifdef __EMSCRIPTEN__
-    publishTextFields();           // (the ones drawn last frame)
-    pollWebKeyboard(out, mouse);
-#endif
 
     // Key presses, in the order they happened.
     std::vector<int> pressed;
@@ -385,10 +332,6 @@ void TextInput::update(float dt) {
 }
 
 void TextInput::draw() const {
-#ifdef __EMSCRIPTEN__
-    Vector2 a = ui::toReal({rect.x, rect.y}), b = ui::toReal({rect.x + rect.width, rect.y + rect.height});
-    g_fields.push_back({a.x, a.y, b.x - a.x, b.y - a.y, active});
-#endif
     fillRound(rect, 8, WHITE);
     lineRound(rect, 8, 2, active ? ui::BTN : rgba(120, 120, 120));
     Vector2 m = measure(text.empty() ? "A" : text, fontSize);

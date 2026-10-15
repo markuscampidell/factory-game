@@ -140,7 +140,8 @@ private:
     // edge (notches less than ZOOM_SPIN_PAUSE apart), the zoom stays at the
     // edge for ZOOM_EDGE_HOLD seconds (those notches do nothing); after that
     // the notches count towards the gate even while spinning. Notches after
-    // a pause count straight away.
+    // a pause count straight away. A notch the other way while the bar is
+    // showing only hides it (no zooming); the next one zooms again.
     static constexpr int ZOOM_GATE_STEPS = 10;
     static constexpr double ZOOM_GATE_TIME = 1.0;
     static constexpr double ZOOM_SPIN_PAUSE = 0.35;
