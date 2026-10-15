@@ -17,7 +17,8 @@
 #include <vector>
 
 enum class BuildMode { None, Building, Deleting };
-enum class Buildable { Smelter, Assembler, Belt, Splitter, Storage, Miner, WaterPump };
+// Landfill isn't a machine: it turns water into land (see Builder::placeLandfill).
+enum class Buildable { Smelter, Assembler, Belt, Splitter, Storage, Miner, WaterPump, Landfill };
 
 inline Buildable toBuildable(MachineType t) {
     switch (t) {
@@ -171,6 +172,12 @@ private:
     Buildable selected_ = Buildable::Smelter;
     Dir beltDir_ = Dir::Right;
     int splitterRot_ = 0;
+    // ---- landfill (a square of landfillSize_ tiles per side; + / - or Shift + wheel) ----
+    int landfillSize_ = LANDFILL_DEFAULT;
+    bool holdingLandfill() const { return mode_ == BuildMode::Building && bpMode_ == BpMode::None && selected_ == Buildable::Landfill; }
+    void resizeLandfill(int delta);
+    void tryPlaceLandfillAt(Vec2i tile);
+    void drawGhostLandfill();
     bool placingBelt_ = false;
     Vec2i beltStart_;
     std::optional<Vec2i> lastDragged_;

@@ -398,6 +398,7 @@ struct SaveData {
     std::vector<Belt> belts;          // alive ones
     std::vector<Machine> machines;    // alive ones
     std::vector<Vec2i> explored;
+    std::vector<Vec2i> landfill;
 };
 
 std::unique_ptr<SaveData> snapshot(const World& w, const Player& p, const CameraState& cam) {
@@ -419,6 +420,7 @@ std::unique_ptr<SaveData> snapshot(const World& w, const Player& p, const Camera
     // machine (which may be deleted while the copy is being saved)
     for (Machine& m : d->machines) if (m.type == MachineType::Miner) m.recipe = &m.minerRecipe;
     d->explored.assign(w.explored().begin(), w.explored().end());
+    d->landfill.assign(w.landfill().begin(), w.landfill().end());
     return d;
 }
 
@@ -450,6 +452,9 @@ bool writeSave(const SaveData& d, const std::string& name, std::string* error) {
     json explored = json::array();   // C++ extra: chunks the player has seen
     for (Vec2i c : d.explored) explored.push_back(json::array({c.x, c.y}));
     data["explored_chunks"] = std::move(explored);
+    json fill = json::array();   // C++ extra: water tiles that were landfilled
+    for (Vec2i c : d.landfill) fill.push_back(json::array({c.x, c.y}));
+    data["landfill"] = std::move(fill);
 
     fs::path path = pathFor(name);
     fs::path tmp = path;
@@ -565,6 +570,11 @@ bool loadGame(World& w, Player& p, CameraState& cam, const std::string& name, st
         for (const json& jm : data.value("markers", json::array()))
             if (jm.is_object())
                 cam.markers.push_back({{jm.value("x", 0), jm.value("y", 0)}, jm.value("name", std::string("Marker")), jm.value("symbol", std::string())});
+
+        // landfill before anything is placed (things may stand on it)
+        if (data.contains("landfill") && data["landfill"].is_array())
+            for (const json& c : data["landfill"])
+                if (c.is_array() && c.size() == 2) w.addLandfill({c[0].get<int>(), c[1].get<int>()});
 
         if (data.contains("explored_chunks") && data["explored_chunks"].is_array())
             for (const json& c : data["explored_chunks"])
@@ -720,6 +730,8 @@ std::vector<Blueprint> loadBlueprints(std::vector<BlueprintBook>* booksOut) {
                         bm.sideFilters[k] = filterFromJson(m["output_filters"][k]);
                 bp.machines.push_back(bm);
             }
+            for (const json& l : jb.value("landfill", json::array()))
+                if (l.is_array() && l.size() == 2) bp.landfill.push_back({l[0].get<int>(), l[1].get<int>()});
             bp.computeMasks();
             if (!bp.empty()) out.push_back(bp);
         }
@@ -752,6 +764,11 @@ bool saveBlueprints(const std::vector<Blueprint>& list, const std::vector<Bluepr
         }
         jb["belts"] = belts;
         jb["machines"] = machines;
+        if (!bp.landfill.empty()) {
+            json fill = json::array();
+            for (Vec2i l : bp.landfill) fill.push_back(json::array({l.x, l.y}));
+            jb["landfill"] = fill;
+        }
         arr.push_back(jb);
     }
     fs::path path = blueprintsPath(), tmp = path;

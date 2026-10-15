@@ -7,6 +7,7 @@
 #include "../src/sim/Build.hpp"
 #include "../src/sim/Save.hpp"
 #include "../src/sim/Terrain.hpp"
+#include "../src/sim/Blueprint.hpp"
 #include <nlohmann/json.hpp>
 #include <fstream>
 #include <cmath>
@@ -413,6 +414,93 @@ static void testOutputSidesSave() {
           "old save: machines not right + top");
     save::remove("output_sides");
     std::printf("  output sides saved; old saves get right + top\n");
+}
+
+// Landfill: 10 limestone per water tile; squares of 1..10; only water tiles
+// are filled; Ctrl+Z gives the limestone back; saved; part of blueprints.
+static void testLandfill() {
+    const int64_t seed = 424242;
+    ItemId LIME = itemByStringId("limestone");
+    World w; w.seed = seed;
+    Player p; p.setCenter(-50000, -50000);
+    Builder b(w, p);
+    // a 4x4 block of water with land just left of it
+    Vec2i lake{0, 0};
+    bool found = false;
+    for (int y = -400; y < 400 && !found; ++y)
+        for (int x = -400; x < 400 && !found; ++x) {
+            if (w.isWater({x - 1, y}) || w.isWater({x - 1, y + 1})) continue;
+            bool all = true;
+            for (int dy = 0; dy < 4 && all; ++dy)
+                for (int dx = 0; dx < 4 && all; ++dx) all = w.isWater({x + dx, y + dy});
+            if (all) { lake = {x, y}; found = true; }
+        }
+    CHECK(found, "no lake found");
+    if (!found) return;
+    // 2x2 half on land: only the 2 water tiles are filled and paid
+    Vec2i tl = lake + Vec2i{-1, 0};
+    CHECK(b.checkLandfill(tl, 2).status == PlaceStatus::NoFunds, "landfill without limestone allowed");
+    p.inventory.tryAdd(LIME, 100);
+    auto c = b.checkLandfill(tl, 2);
+    CHECK(c.status == PlaceStatus::Ok && c.tiles.size() == 2 && asMap(c.cost)[LIME] == 20, "half land 2x2: %d tiles, %d limestone",
+          int(c.tiles.size()), asMap(c.cost)[LIME]);
+    CHECK(b.checkLandfill({0, 0}, 3).status == PlaceStatus::NoWater, "landfill on dry land allowed");
+    w.recordChanges = true;
+    w.takeRecord();
+    ItemAmounts delta;
+    CHECK(b.placeLandfill(tl, 2, &delta) && p.inventory.amount(LIME) == 80 && asMap(delta)[LIME] == -20, "placing landfill");
+    CHECK(!w.isWater(lake) && w.isLandfill(lake) && !w.isWater(lake + Vec2i{0, 1}), "landfill tiles still water");
+    CHECK(w.oreAt(lake) == NO_ITEM, "landfill has ore");
+    UndoRecord rec = w.takeRecord();
+    CHECK(rec.landfillAdded.size() == 2, "undo record has %d landfill tiles", int(rec.landfillAdded.size()));
+    // a belt on landfill blocks taking it back
+    int belt = w.addBelt(lake, Dir::Right);
+    w.takeRecord();
+    CHECK(b.undo(rec) == Builder::UndoResult::Blocked, "undo with a belt on the landfill");
+    w.removeBelt(belt);
+    w.takeRecord();
+    UndoRecord redo;
+    CHECK(b.undo(rec, nullptr, &redo) == Builder::UndoResult::Ok && w.isWater(lake) && p.inventory.amount(LIME) == 100, "undo of landfill");
+    CHECK(b.undo(redo) == Builder::UndoResult::Ok && !w.isWater(lake) && p.inventory.amount(LIME) == 80, "redo of landfill");
+    w.recordChanges = false;
+    // things can be built on it now
+    p.inventory.tryAdd(IRON_INGOT, 50);
+    p.inventory.tryAdd(COPPER_INGOT, 50);
+    CHECK(b.placeBelts(lake, lake, Dir::Right, false), "belt on landfill refused");
+    // saved and loaded
+    {
+        save::setSavesDir("test_saves");
+        CameraState cam;
+        CHECK(save::saveGame(w, p, cam, "landfill"), "save failed");
+        World l; Player lp; CameraState lc;
+        CHECK(save::loadGame(l, lp, lc, "landfill") && l.isLandfill(lake) && !l.isWater(lake) && l.beltAt(lake), "landfill not kept when loading");
+        save::remove("landfill");
+    }
+    // blueprints: copy the landfilled tiles, paste over water elsewhere -> filled, a smelter can stand there
+    Blueprint bp = captureBlueprint(w, tl, tl + Vec2i{1, 1});
+    CHECK(bp.landfill.size() == 2 && bp.belts.size() == 1, "copy: %d landfill tiles, %d belts", int(bp.landfill.size()), int(bp.belts.size()));
+    Blueprint r = rotatedCW(bp);
+    CHECK(r.landfill.size() == 2 && r.w == bp.h && r.h == bp.w, "turned blueprint landfill");
+    Blueprint big;                                       // 3x3 landfill with a smelter on it
+    for (int y = 0; y < 3; ++y) for (int x = 0; x < 3; ++x) big.landfill.push_back({x, y});
+    BlueprintMachine bm; bm.type = MachineType::Smelter; bm.off = {0, 0};
+    big.machines.push_back(bm); big.w = big.h = 3;
+    Vec2i at = lake + Vec2i{1, 1};                       // still water (3x3 inside the 4x4 lake, minus what was filled)
+    p.inventory.tryAdd(LIME, 100);
+    auto bc = b.checkBlueprint(big, at);
+    int waterTiles = 0;
+    for (Vec2i o : big.landfill) waterTiles += w.isWater(at + o);
+    CHECK(bc.status == PlaceStatus::Ok && asMap(bc.cost)[LIME] == 10 * waterTiles, "blueprint with landfill: status %d, %d limestone for %d water tiles",
+          int(bc.status), asMap(bc.cost)[LIME], waterTiles);
+    int lime0 = p.inventory.amount(LIME);
+    CHECK(b.placeBlueprint(big, at) && w.machineAt(at) && p.inventory.amount(LIME) == lime0 - 10 * waterTiles, "blueprint with landfill not placed");
+    bool dry = true;
+    for (Vec2i o : big.landfill) dry &= !w.isWater(at + o);
+    CHECK(dry, "blueprint landfill left water");
+    // without its landfill the smelter couldn't go there
+    Blueprint noFill = big; noFill.landfill.clear();
+    CHECK(b.checkBlueprint(noFill, lake + Vec2i{0, 3}).status != PlaceStatus::Ok || !w.isWater(lake + Vec2i{0, 3}), "smelter on water without landfill");
+    std::printf("  landfill: water tiles only, 10 limestone each, undo / redo, saved, in blueprints\n");
 }
 
 // Ctrl + left click: take a machine's outputs / a chest's contents.
@@ -1081,6 +1169,7 @@ int main(int argc, char** argv) {
     testProductionChain();
     testOutputSides();
     testWater();
+    testLandfill();
     testOutputSidesSave();
     testTakeContents();
     testPickUpUnderPlayer();

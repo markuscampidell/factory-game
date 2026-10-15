@@ -212,7 +212,8 @@ struct ObjSnap {
 };
 struct UndoRecord {
     std::vector<ObjSnap> removed, added;
-    bool empty() const { return removed.empty() && added.empty(); }
+    std::vector<Vec2i> landfillAdded, landfillRemoved;   // water tiles filled / turned back into water
+    bool empty() const { return removed.empty() && added.empty() && landfillAdded.empty() && landfillRemoved.empty(); }
 };
 
 // ---------------------------------------------------------------------------
@@ -247,7 +248,13 @@ public:
     // only shows chunks that are already explored.
     uint8_t tileType(Vec2i t);
     ItemId oreAt(Vec2i t);
-    bool isWater(Vec2i t);   // lakes / seas: nothing can be built there
+    bool isWater(Vec2i t);   // lakes / seas (not landfilled): nothing can be built there
+
+    // ---- landfill: water tiles turned into land (saved; recorded for undo) ----
+    bool isLandfill(Vec2i t) const { return landfill_.count(t) != 0; }
+    const std::unordered_set<Vec2i, Vec2iHash>& landfill() const { return landfill_; }
+    void addLandfill(Vec2i t);
+    void removeLandfill(Vec2i t);
     bool isExplored(int cx, int cy) const { return explored_.count(Vec2i{cx, cy}) != 0; }
     void markExplored(int cx, int cy) { explored_.insert(Vec2i{cx, cy}); }
     const std::unordered_set<Vec2i, Vec2iHash>& explored() const { return explored_; }
@@ -324,6 +331,7 @@ private:
 
     std::unordered_map<Vec2i, std::unique_ptr<Chunk>, Vec2iHash> chunks_;
     std::unordered_set<Vec2i, Vec2iHash> explored_;
+    std::unordered_set<Vec2i, Vec2iHash> landfill_;
     std::vector<Belt> belts_;
     std::vector<int> freeBelts_;
     std::vector<std::unique_ptr<Machine>> machines_;

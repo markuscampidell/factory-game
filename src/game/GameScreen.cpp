@@ -568,7 +568,15 @@ void GameScreen::handle(const Event& e) {
 }
 
 void GameScreen::handleKeys(const Event& e) {
+    if (e.type == EvType::Text && holdingLandfill()) {
+        if (e.codepoint == '+' || e.codepoint == '=') resizeLandfill(1);
+        else if (e.codepoint == '-') resizeLandfill(-1);
+        return;
+    }
     if (e.type != EvType::KeyDown) return;
+    if (holdingLandfill() && (e.key == KEY_EQUAL || e.key == KEY_KP_ADD || e.key == KEY_MINUS || e.key == KEY_KP_SUBTRACT ||
+                              e.key == KEY_RIGHT_BRACKET || e.key == KEY_SLASH))
+        return;   // + / - resize the landfill (see the Text event above) - no zooming
     if (e.key == KEY_ESCAPE) {   // first the panels, one by one, then build mode
         if (!closeTopPanel()) resetBuildState();
         return;
@@ -611,6 +619,11 @@ void GameScreen::handleMouse(const Event& e) {
                 craftScroll_ = clampScroll(craftScroll_ - e.wheel * 40, content, viewport.height);
                 return;
             }
+        }
+        // Shift + wheel while holding landfill: its size (no zooming)
+        if (shiftDown() && holdingLandfill()) {
+            if (!mouseOverOpenPanel(e.pos)) resizeLandfill(e.wheel > 0 ? 1 : -1);
+            return;
         }
         // anywhere else (not over a panel): zoom around the mouse
         if (!mouseOverOpenPanel(e.pos)) zoomBy(std::pow(1.15f, e.wheel), e.pos);
@@ -687,6 +700,7 @@ void GameScreen::enterBuild() {
 
 void GameScreen::rotateSelected(int steps) {
     if (selected_ == Buildable::Belt) { beltDir_ = rotateCW(beltDir_, steps); return; }
+    if (selected_ == Buildable::Landfill) return;   // a square: nothing to turn
     MachineType t = toMachine(selected_);
     if (machineDirMatters(t)) splitterRot_ = floorMod(splitterRot_ + steps, 4);   // splitters; smelters / assemblers: output sides
     else if (machineTurnable(t))
@@ -735,6 +749,7 @@ void GameScreen::handlePlacement(const Event& e) {
         }
         return;
     }
+    if (mode_ == BuildMode::Building && selected_ == Buildable::Landfill) { if (!mouseOverOpenPanel(e.pos)) tryPlaceLandfillAt(tile); return; }
     if (mode_ == BuildMode::Building) tryPlaceMachineAt(tile);
 }
 
@@ -748,7 +763,26 @@ void GameScreen::updateDrag() {
     for (auto& r : hotbarRects()) if (inRect(r, ui::mouse())) return;
     Vec2i tile = mouseTile();
     if (mode_ == BuildMode::Deleting) tryDeleteAt(tile);
+    else if (mode_ == BuildMode::Building && selected_ == Buildable::Landfill) tryPlaceLandfillAt(tile);
     else if (mode_ == BuildMode::Building) tryPlaceMachineAt(tile);
+}
+
+// Landfill: click (or drag) fills the water in the square at the mouse.
+void GameScreen::tryPlaceLandfillAt(Vec2i tile) {
+    if (mapMode()) return;
+    if (lastDragged_ && *lastDragged_ == tile) return;
+    Vec2i tl = Builder::landfillTopLeft(tile, landfillSize_);
+    ItemAmounts delta;
+    if (builder_.placeLandfill(tl, landfillSize_, &delta)) {
+        lastDragged_ = tile;
+        justPlaced_ = true;
+        showItemDelta(float((tl.x + landfillSize_ / 2.0f) * CELL_SIZE), float(tl.y * CELL_SIZE), delta);
+    }
+}
+
+void GameScreen::resizeLandfill(int delta) {
+    landfillSize_ = std::clamp(landfillSize_ + delta, LANDFILL_MIN, LANDFILL_MAX);
+    notify("Landfill " + std::to_string(landfillSize_) + " x " + std::to_string(landfillSize_));
 }
 
 void GameScreen::tryDeleteAt(Vec2i tile) {
@@ -991,13 +1025,13 @@ void GameScreen::closeIfClickedOutside(Vector2 p) {
 // Hotbar (bottom of the screen)
 // ---------------------------------------------------------------------------
 namespace {
-struct HotbarSlot { int key; int kind; Buildable b; }; // kind 0 machine, 1 none, 2 delete
+// (no number keys: there will be many more buildings - click a slot)
+struct HotbarSlot { int kind; Buildable b; }; // kind 0 something to build, 1 none, 2 delete
 const HotbarSlot HOTBAR[] = {
-    {KEY_ONE, 0, Buildable::Smelter},  {KEY_TWO, 0, Buildable::Assembler}, {KEY_THREE, 0, Buildable::Belt},
-    {KEY_FOUR, 0, Buildable::Splitter}, {KEY_FIVE, 0, Buildable::Storage}, {KEY_SIX, 0, Buildable::Miner},
-    {KEY_SEVEN, 0, Buildable::WaterPump}, {KEY_EIGHT, 1, Buildable::Smelter}, {KEY_NINE, 2, Buildable::Smelter},
+    {0, Buildable::Smelter}, {0, Buildable::Assembler}, {0, Buildable::Belt},      {0, Buildable::Splitter}, {0, Buildable::Storage},
+    {0, Buildable::Miner},   {0, Buildable::WaterPump}, {0, Buildable::Landfill}, {1, Buildable::Smelter}, {2, Buildable::Smelter},
 };
-constexpr int HOTBAR_N = 9;
+constexpr int HOTBAR_N = int(sizeof(HOTBAR) / sizeof(HOTBAR[0]));
 constexpr float SLOT = 56, GAP = 8, MARGIN_BOTTOM = 18;
 } // namespace
 
@@ -1011,12 +1045,6 @@ std::vector<Rectangle> GameScreen::hotbarRects() const {
 }
 
 bool GameScreen::hotbarHandle(const Event& e) {
-    if (e.type == EvType::KeyDown) {
-        int kp[] = {KEY_KP_1, KEY_KP_2, KEY_KP_3, KEY_KP_4, KEY_KP_5, KEY_KP_6, KEY_KP_7, KEY_KP_8, KEY_KP_9};
-        for (int i = 0; i < HOTBAR_N; ++i)
-            if (e.key == HOTBAR[i].key || e.key == kp[i]) { hotbarActivate(i); return true; }
-        return false;
-    }
     if (e.type == EvType::MouseDown && e.button == MB_LEFT) {
         auto rs = hotbarRects();
         for (int i = 0; i < HOTBAR_N; ++i)
@@ -1038,13 +1066,14 @@ std::string GameScreen::hotbarTooltip(Vector2 p) const {
     for (int i = 0; i < HOTBAR_N; ++i) {
         if (!inRect(rs[size_t(i)], p)) continue;
         const HotbarSlot& s = HOTBAR[i];
-        std::string key = std::to_string(i + 1);
-        if (s.kind == 1) return "Nothing (" + key + ")";
-        if (s.kind == 2) return "Delete (" + key + " / X)";
+        if (s.kind == 1) return "Nothing";
+        if (s.kind == 2) return "Delete (X)";
+        if (s.b == Buildable::Landfill)
+            return "Landfill - turns water into land, " + costText(landfillTileCost()) + " per water tile - + / - or Shift + mouse wheel: size";
         bool belt = s.b == Buildable::Belt;
         std::string name = belt ? "Belt" : machineSpec(toMachine(s.b)).name;
         const ItemAmounts& cost = belt ? beltBuildCost() : machineSpec(toMachine(s.b)).cost;
-        std::string tip = name + " (" + key + ") - " + costText(cost);
+        std::string tip = name + " - " + costText(cost);
         if (belt || s.b == Buildable::Splitter)   // one item per tile every BELT_TICKS_PER_TILE ticks
             tip += " - " + std::to_string(60 * TICKS_PER_SECOND / BELT_TICKS_PER_TILE) + " items/min - R / T to rotate";
         else if (machineHasOutputSides(toMachine(s.b)))
@@ -1068,7 +1097,13 @@ void GameScreen::drawHotbar() {
         drawButtonBase(r, active ? ui::ACTIVE_SLOT : rgba(55, 55, 55));
         lineRound(r, 8, 2, rgba(20, 20, 20));
         Rectangle inner{r.x + 8, r.y + 8, r.width - 16, r.height - 16};
-        if (s.kind == 0) {
+        if (s.kind == 0 && s.b == Buildable::Landfill) {
+            // a patch of filled ground with a bit of water at the corner
+            Rectangle g{r.x + 10, r.y + 10, r.width - 20, r.height - 20};
+            DrawRectangleRec(g, Color{88, 70, 48, 255});
+            DrawRectangleRec({g.x + g.width * 0.62f, g.y + g.height * 0.62f, g.width * 0.38f, g.height * 0.38f}, Color{52, 110, 170, 255});
+            DrawRectangleLinesEx(g, 1, rgba(30, 24, 16));
+        } else if (s.kind == 0) {
             const Texture2D* t = s.b == Buildable::Belt ? &assets::belt(0, Dir::Right) : assets::machine(toMachine(s.b));
             if (t) {
                 float sc = std::min(inner.width / float(t->width), inner.height / float(t->height));
@@ -1089,7 +1124,6 @@ void GameScreen::drawHotbar() {
             fillRound(centeredRect(r.x + r.width / 2, body.y - 2, r.width - 16, 6), 2, red);
             fillRound(centeredRect(r.x + r.width / 2, body.y - 7, 14, 5), 2, red);
         }
-        text(std::to_string(i + 1), r.x + 4, r.y + 2, 13, WHITE, true);
         if (mapMode() && s.kind != 1) fillRound(r, 8, Color{20, 20, 20, 160}); // unavailable in map view
     }
 }

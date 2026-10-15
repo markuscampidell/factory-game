@@ -11,6 +11,7 @@ ItemAmounts Blueprint::cost() const {
         for (auto& c : beltBuildCost()) addAmount(total, c.first, c.second);
     for (auto& m : machines)
         for (auto& c : machineSpec(m.type).cost) addAmount(total, c.first, c.second);
+    for (auto& c : landfillTileCost()) addAmount(total, c.first, c.second * int(landfill.size()));
     return total;
 }
 
@@ -42,9 +43,11 @@ static void normalize(Blueprint& bp) {
     };
     for (auto& b : bp.belts) grow(b.off, 1, 1);
     for (auto& m : bp.machines) grow(m.off, machineSize(m.type, m.dir).x, machineSize(m.type, m.dir).y);
+    for (Vec2i l : bp.landfill) grow(l, 1, 1);
     if (x0 == INT_MAX) { bp.w = bp.h = 0; return; }
     for (auto& b : bp.belts) b.off = b.off - Vec2i{x0, y0};
     for (auto& m : bp.machines) m.off = m.off - Vec2i{x0, y0};
+    for (auto& l : bp.landfill) l = l - Vec2i{x0, y0};
     bp.w = x1 - x0 + 1;
     bp.h = y1 - y0 + 1;
 }
@@ -67,6 +70,7 @@ Blueprint rotatedCW(const Blueprint& src, int turns) {
             m.off = {H - m.off.y - s.y, m.off.x};
             m.dir = normalizeMachineDir(m.type, rotateCW(m.dir, 1));
         }
+        for (auto& l : out.landfill) l = {H - 1 - l.y, l.x};
         normalize(out);
         bp = out;
     }
@@ -86,6 +90,7 @@ Blueprint mirrored(const Blueprint& src) {
         m.dir = mirroredMachineDir(m.type, m.dir);
         if (m.type == MachineType::Splitter) std::swap(m.sideFilters[0], m.sideFilters[2]);   // left <-> right
     }
+    for (auto& l : bp.landfill) l.x = src.w - 1 - l.x;
     normalize(bp);
     bp.computeMasks();
     return bp;
@@ -123,11 +128,21 @@ void gatherSelection(const World& w, const Selection& s, std::vector<int>& belts
 Blueprint captureBlueprint(const World& w, Vec2i start, Vec2i end) {
     Blueprint bp;
     std::vector<int> beltIds, machineIds;
-    gatherSelection(w, makeSelection(start, end), beltIds, machineIds);
-    if (beltIds.empty() && machineIds.empty()) return bp;
+    Selection sel = makeSelection(start, end);
+    gatherSelection(w, sel, beltIds, machineIds);
+    std::vector<Vec2i> fill;   // landfilled tiles inside the selection
+    if (!w.landfill().empty())
+        for (int y = sel.y0; y <= sel.y1; ++y)
+            for (int x = sel.x0; x <= sel.x1; ++x)
+                if (w.isLandfill({x, y})) fill.push_back({x, y});
+    if (beltIds.empty() && machineIds.empty() && fill.empty()) return bp;
 
     // bounding box of everything taken (machines may stick out)
     int minX = INT_MAX, minY = INT_MAX, maxX = INT_MIN, maxY = INT_MIN;
+    for (Vec2i p : fill) {
+        minX = std::min(minX, p.x); minY = std::min(minY, p.y);
+        maxX = std::max(maxX, p.x); maxY = std::max(maxY, p.y);
+    }
     for (int id : beltIds) {
         Vec2i p = w.belt(id).pos;
         minX = std::min(minX, p.x); minY = std::min(minY, p.y);
@@ -156,6 +171,7 @@ Blueprint captureBlueprint(const World& w, Vec2i start, Vec2i end) {
         bm.sideFilters = m.sideFilters;
         bp.machines.push_back(bm);
     }
+    for (Vec2i p : fill) bp.landfill.push_back(p - origin);
     bp.computeMasks();
     return bp;
 }

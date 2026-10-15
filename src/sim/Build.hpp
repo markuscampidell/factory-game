@@ -21,7 +21,14 @@
 // around the player (Builder::blueprintReach).
 // OnWater: something would stand on water; NeedsWater: a water pump that
 // doesn't touch water.
-enum class PlaceStatus : uint8_t { Ok, Blocked, NoSpace, NoFunds, NoOre, Undiscovered, OutOfReach, OnWater, NeedsWater };
+// NoWater: landfill where there is no water to fill.
+enum class PlaceStatus : uint8_t { Ok, Blocked, NoSpace, NoFunds, NoOre, Undiscovered, OutOfReach, OnWater, NeedsWater, NoWater };
+
+// Landfill turns water into land: 10 limestone per water tile. Placed as a
+// square of LANDFILL_MIN..LANDFILL_MAX tiles per side (+ / - or Shift + mouse
+// wheel while holding it); only the water tiles in it are filled and paid.
+constexpr int LANDFILL_MIN = 1, LANDFILL_MAX = 10, LANDFILL_DEFAULT = 2;
+const ItemAmounts& landfillTileCost();
 
 // Water pumps must have water right next to them (one of the tiles around
 // their footprint, not diagonally).
@@ -64,7 +71,8 @@ struct PlacePlan {
     std::vector<int> existing;        // per request: object kept in place (belt / machine id) or -1
     std::vector<int> removeBelts, removeMachines;
     ItemAmounts delta;                // inventory change: + got back, - paid
-    ItemAmounts cost;                 // build cost of the new objects only
+    ItemAmounts cost;                 // build cost of the new objects only (+ landfill)
+    std::vector<Vec2i> fill;          // water tiles filled first (blueprints with landfill)
 };
 
 class Builder {
@@ -95,8 +103,11 @@ public:
 
     // ---- placing anything (see PlaceRequest) ----
     // limitReach: everything must be inside the blueprint reach (blueprints / copies)
+    // `fill`: landfill tiles (blueprints) - those that are water now are
+    // filled first and count as land for everything placed with them.
     PlacePlan planPlacement(const std::vector<PlaceRequest>& reqs, bool allowReplace,
-                            const std::set<int>* protectedIds = nullptr, bool limitReach = false) const;
+                            const std::set<int>* protectedIds = nullptr, bool limitReach = false,
+                            const std::vector<Vec2i>* fill = nullptr) const;
     // Does it (plan.status must be Ok). Returns the belt / machine id per request.
     std::vector<int> executePlacement(const std::vector<PlaceRequest>& reqs, const PlacePlan& plan);
 
@@ -121,6 +132,16 @@ public:
     // E: picks up the items lying on the belts and splitters the player
     // stands on (as far as they fit). Nothing: none there; NoSpace: none fit.
     TakeResult pickUpUnderPlayer(ItemAmounts* got = nullptr);
+
+    // ---- landfill ----
+    static Vec2i landfillTopLeft(Vec2i mouseTile, int size) { return {mouseTile.x - size / 2, mouseTile.y - size / 2}; }
+    struct LandfillCheck {
+        PlaceStatus status = PlaceStatus::Ok;   // Ok, NoWater, NoFunds, Undiscovered
+        std::vector<Vec2i> tiles;               // the water tiles that would be filled
+        ItemAmounts cost;
+    };
+    LandfillCheck checkLandfill(Vec2i topLeft, int size) const;
+    bool placeLandfill(Vec2i topLeft, int size, ItemAmounts* delta = nullptr);
 
     // R when not building: turns the belt, splitter, smelter or assembler at
     // tile t by `steps` quarter turns clockwise. Everything inside stays

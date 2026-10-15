@@ -9,6 +9,7 @@
 namespace {
 const Color GROUND{110, 88, 60, 255};
 const Color WATER{52, 110, 170, 255};
+const Color LANDFILL{96, 76, 52, 255};   // filled ground: a bit darker than GROUND
 // 30% opacity so the grid doesn't overpower the world
 const Color GRID_COLOR{204, 204, 204, 77};
 const Color CHUNK_COLOR{255, 140, 0, 77};
@@ -135,6 +136,10 @@ void GameScreen::drawTerrain() {
                 DrawRectangleRec({float(x * CELL_SIZE), float(y * CELL_SIZE), CELL_SIZE, CELL_SIZE}, WATER);
                 continue;
             }
+            if (world_.isLandfill({x, y})) {
+                DrawRectangleRec({float(x * CELL_SIZE), float(y * CELL_SIZE), CELL_SIZE, CELL_SIZE}, LANDFILL);
+                continue;   // (no ore under landfill)
+            }
             ItemId ore = world_.oreAt({x, y});
             if (ore == NO_ITEM) continue;
             Vector2 p = toScreen(float(x * CELL_SIZE), float(y * CELL_SIZE));
@@ -207,6 +212,7 @@ const Texture2D* GameScreen::mapChunkTexture(int cx, int cy) {
             TileRef r = ch ? ch->refs[size_t(i)] : 0;
             if (r > 0) px[i] = beltColor;
             else if (r < 0) px[i] = machineMapColor(world_.machine(-r - 1).type);
+            else if (world_.isLandfill({cx * CHUNK_SIZE + x, cy * CHUNK_SIZE + y})) px[i] = LANDFILL;
             else px[i] = explored ? oreMapColor(world_.tileType({cx * CHUNK_SIZE + x, cy * CHUNK_SIZE + y})) : BLACK;
         }
     if (it != mapChunks_.end()) {
@@ -262,6 +268,8 @@ void drawBlueprintMap(const Blueprint& bp, Rectangle sq) {
     float tile = std::min((sq.width - 2 * pad) / float(bp.w), (sq.height - 2 * pad) / float(bp.h));
     float x0 = sq.x + (sq.width - tile * float(bp.w)) / 2, y0 = sq.y + (sq.height - tile * float(bp.h)) / 2;
     const Color beltColor{150, 150, 150, 255};
+    for (Vec2i l : bp.landfill)
+        DrawRectangleRec({x0 + float(l.x) * tile, y0 + float(l.y) * tile, tile, tile}, LANDFILL);
     for (const BlueprintBelt& b : bp.belts)
         DrawRectangleRec({x0 + float(b.off.x) * tile, y0 + float(b.off.y) * tile, tile, tile}, beltColor);
     for (const BlueprintMachine& m : bp.machines) {
@@ -471,10 +479,36 @@ void GameScreen::drawBuildMode() {
     if (bpMode_ != BpMode::None) { drawBlueprintMode(); return; }
     if (mode_ == BuildMode::Building) {
         if (selected_ == Buildable::Belt) { drawOutputArrows(); drawGhostBelts(); }
+        else if (selected_ == Buildable::Landfill) drawGhostLandfill();
         else drawGhostMachine();
     } else if (mode_ == BuildMode::Deleting) {
         drawDeleteGhost();
     }
+}
+
+// Holding landfill: the square at the mouse - the water tiles it would fill
+// in the landfill colour, land tiles just outlined; tinted like other ghosts
+// when it can't be placed.
+void GameScreen::drawGhostLandfill() {
+    Vec2i tl = Builder::landfillTopLeft(mouseTile(), landfillSize_);
+    Builder::LandfillCheck c = builder_.checkLandfill(tl, landfillSize_);
+    std::unordered_set<Vec2i, Vec2iHash> fill(c.tiles.begin(), c.tiles.end());
+    for (int dy = 0; dy < landfillSize_; ++dy)
+        for (int dx = 0; dx < landfillSize_; ++dx) {
+            Vec2i t{tl.x + dx, tl.y + dy};
+            Rectangle r{float(t.x * CELL_SIZE), float(t.y * CELL_SIZE), CELL_SIZE, CELL_SIZE};
+            if (fill.count(t)) DrawRectangleRec(r, Color{LANDFILL.r, LANDFILL.g, LANDFILL.b, 200});
+        }
+    Rectangle all{float(tl.x * CELL_SIZE), float(tl.y * CELL_SIZE), float(landfillSize_ * CELL_SIZE), float(landfillSize_ * CELL_SIZE)};
+    Color tint{0, 0, 0, 0};
+    switch (c.status) {
+        case PlaceStatus::NoFunds: tint = {255, 255, 0, 70}; break;
+        case PlaceStatus::NoWater: tint = {255, 0, 0, 60}; break;
+        case PlaceStatus::Undiscovered: tint = {20, 20, 20, 170}; break;
+        default: break;
+    }
+    if (tint.a) DrawRectangleRec(all, tint);
+    DrawRectangleLinesEx(all, 2.0f / cam_.zoom, Color{255, 255, 255, 170});
 }
 
 // While holding a water pump: light up the free land tiles right next to

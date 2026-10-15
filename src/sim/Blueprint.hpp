@@ -28,10 +28,11 @@ struct Blueprint {
     int w = 0, h = 0;        // size in tiles
     std::vector<BlueprintBelt> belts;
     std::vector<BlueprintMachine> machines;
+    std::vector<Vec2i> landfill;     // landfilled tiles (offsets); filled again where there is water
 
-    bool empty() const { return belts.empty() && machines.empty(); }
-    int count() const { return int(belts.size() + machines.size()); }
-    ItemAmounts cost() const;        // everything needed to build it
+    bool empty() const { return belts.empty() && machines.empty() && landfill.empty(); }
+    int count() const { return int(belts.size() + machines.size() + landfill.size()); }
+    ItemAmounts cost() const;        // everything needed to build it (landfill: as if every tile were water)
     void computeMasks();             // fills BlueprintBelt::mask
 };
 

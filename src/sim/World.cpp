@@ -1,6 +1,7 @@
 // sim/World.cpp - world storage, machines, and belt topology.
 #include "World.hpp"
 #include "Terrain.hpp"
+#include <algorithm>
 
 // ---------------------------------------------------------------------------
 // Machine specs
@@ -143,6 +144,7 @@ std::vector<OutputTile> machineOutputTiles(const Machine& m) {
 void World::clear() {
     chunks_.clear();
     explored_.clear();
+    landfill_.clear();
     belts_.clear();
     freeBelts_.clear();
     machines_.clear();
@@ -205,7 +207,29 @@ uint8_t World::tileType(Vec2i t) {
 }
 
 ItemId World::oreAt(Vec2i t) { return terrain::oreForTileType(tileType(t)); }
-bool World::isWater(Vec2i t) { return terrain::isWaterTile(tileType(t)); }
+bool World::isWater(Vec2i t) { return terrain::isWaterTile(tileType(t)) && !landfill_.count(t); }
+
+void World::addLandfill(Vec2i t) {
+    if (!landfill_.insert(t).second) return;
+    Vec2i k = chunkOf(t);
+    ++chunk(k.x, k.y, true)->version;   // the map view redraws that chunk
+    if (!recordChanges) return;
+    auto& rm = record_.landfillRemoved;   // removed earlier in the same action: cancels out
+    auto it = std::find(rm.begin(), rm.end(), t);
+    if (it != rm.end()) rm.erase(it);
+    else record_.landfillAdded.push_back(t);
+}
+
+void World::removeLandfill(Vec2i t) {
+    if (!landfill_.erase(t)) return;
+    Vec2i k = chunkOf(t);
+    ++chunk(k.x, k.y, true)->version;
+    if (!recordChanges) return;
+    auto& ad = record_.landfillAdded;
+    auto it = std::find(ad.begin(), ad.end(), t);
+    if (it != ad.end()) ad.erase(it);
+    else record_.landfillRemoved.push_back(t);
+}
 
 // ---------------------------------------------------------------------------
 // Undo recording

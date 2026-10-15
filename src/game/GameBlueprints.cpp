@@ -521,6 +521,13 @@ void GameScreen::drawBlueprintMode() {
         if (c.status == PlaceStatus::NoFunds) DrawRectangleRec(r, yellow);
         else if (c.status == PlaceStatus::NoSpace) DrawRectangleRec(r, orange);
     };
+    // landfill first (under everything): water it would fill in the landfill colour
+    for (Vec2i o : placing_.landfill) {
+        Vec2i p = tl + o;
+        Rectangle r{float(p.x * CELL_SIZE), float(p.y * CELL_SIZE), CELL_SIZE, CELL_SIZE};
+        bool wet = world_.isExplored(floorDiv(p.x, CHUNK_SIZE), floorDiv(p.y, CHUNK_SIZE)) && world_.isWater(p);
+        DrawRectangleRec(r, wet ? Color{96, 76, 52, 190} : Color{96, 76, 52, 70});
+    }
     for (size_t i = 0; i < placing_.belts.size(); ++i) {
         const BlueprintBelt& b = placing_.belts[i];
         Vec2i p = tl + b.off;
@@ -577,6 +584,10 @@ void GameScreen::drawCostInfo() {
         cost = check.cost;
     } else if (bpMode_ != BpMode::None) {
         return;
+    } else if (selected_ == Buildable::Landfill) {
+        auto lc = builder_.checkLandfill(Builder::landfillTopLeft(mouseTile(), landfillSize_), landfillSize_);
+        st = lc.status == PlaceStatus::NoFunds ? PlaceStatus::Ok : lc.status;   // (NoFunds: shown in red by "Needs:")
+        cost = lc.cost;
     } else if (selected_ == Buildable::Belt) {
         // one belt, or the whole line while dragging
         Vec2i mt = mouseTile();
@@ -607,6 +618,7 @@ void GameScreen::drawCostInfo() {
             case PlaceStatus::NoOre: reason = "A miner needs ore under it"; swatch = {128, 0, 128, 255}; break;
             case PlaceStatus::OnWater: reason = "Nothing can be built on water"; swatch = {40, 110, 230, 255}; break;
             case PlaceStatus::NeedsWater: reason = "A water pump has to stand right next to water (the highlighted shore)"; swatch = {40, 110, 230, 255}; break;
+            case PlaceStatus::NoWater: reason = "Landfill only goes on water"; swatch = {255, 0, 0, 255}; break;
             case PlaceStatus::Undiscovered: reason = "You haven't discovered this area yet"; swatch = {20, 20, 20, 255}; break;
             default: break;
         }
@@ -627,6 +639,9 @@ void GameScreen::drawCostInfo() {
         hintBox("R: rotate    Shift + R: rotate back    T: turn around    G: mirror left / right", y);
     else if (selected_ == Buildable::Belt || selected_ == Buildable::Splitter)
         hintBox("R: rotate    Shift + R: rotate back    T: turn around", y);
+    else if (selected_ == Buildable::Landfill)
+        hintBox("Landfill " + std::to_string(landfillSize_) + " x " + std::to_string(landfillSize_) +
+                    "    + / - or Shift + mouse wheel: size (1 - 10)    only the water tiles are filled and paid", y);
     else if (machineHasOutputSides(toMachine(selected_)))
         hintBox("Outputs go onto belts at the green arrows    R: turn them    Shift + R: turn back    T: turn around", y);
     else if (machineTurnable(toMachine(selected_)))

@@ -118,12 +118,23 @@ bool Builder::inBlueprintReach(Vec2i t) const {
 }
 
 PlacePlan Builder::planPlacement(const std::vector<PlaceRequest>& reqs, bool allowReplace, const std::set<int>* protectedIds,
-                                 bool limitReach) const {
+                                 bool limitReach, const std::vector<Vec2i>* fill) const {
     PlacePlan plan;
     World& w = const_cast<World&>(world);   // reading ore generates terrain; nothing else changes
     std::set<int> rmBelts, rmMachines;
     ItemAmounts cost, refunds;
     bool blocked = false, noOre = false, undiscovered = false, outOfReach = false, onWater = false, needsWater = false;
+    // landfill that comes with it (blueprints): the water tiles get filled first
+    std::unordered_set<Vec2i, Vec2iHash> filled;
+    if (fill)
+        for (Vec2i t : *fill) {
+            if (limitReach && blueprintReach >= 0 && !inBlueprintReach(t)) { outOfReach = true; continue; }
+            if (requireExplored && !tileExplored(t)) { undiscovered = true; continue; }   // (before reading the terrain)
+            if (!w.isWater(t) || !filled.insert(t).second) continue;
+            plan.fill.push_back(t);
+            for (auto& c : landfillTileCost()) addAmount(cost, c.first, c.second);
+        }
+    auto wet = [&](Vec2i t) { return !filled.count(t) && w.isWater(t); };
     for (const PlaceRequest& r : reqs) {
         PlaceStatus st = PlaceStatus::Ok;
         int keep = -1;
@@ -157,7 +168,7 @@ PlacePlan Builder::planPlacement(const std::vector<PlaceRequest>& reqs, bool all
             else if (ref > 0) {
                 if (world.belt(ref - 1).dir == r.dir || allowReplace) keep = ref - 1;   // updated in place
                 else st = PlaceStatus::Blocked;
-            } else if (w.isWater(r.pos)) {
+            } else if (wet(r.pos)) {
                 st = PlaceStatus::OnWater;
             } else if (ref < 0 && !(allowReplace && !(protectedIds && protectedIds->count(-ref - 1)))) {
                 st = PlaceStatus::Blocked;
@@ -189,7 +200,7 @@ PlacePlan Builder::planPlacement(const std::vector<PlaceRequest>& reqs, bool all
             }
             if (st == PlaceStatus::Ok && keep < 0) {
                 for (Vec2i c : cells)
-                    if (w.isWater(c)) { st = PlaceStatus::OnWater; break; }
+                    if (wet(c)) { st = PlaceStatus::OnWater; break; }
                 if (st == PlaceStatus::Ok && r.type == MachineType::WaterPump && !touchesWater(w, r.type, r.pos, r.dir)) st = PlaceStatus::NeedsWater;
             }
             if (st == PlaceStatus::Ok && keep < 0) {
@@ -253,7 +264,11 @@ std::vector<int> Builder::executePlacement(const std::vector<PlaceRequest>& reqs
     }
     for (int b : plan.removeBelts) world.removeBelt(b);
     for (int m : plan.removeMachines) world.removeMachine(m);
-    // 2. pay, then build / update
+    // 2. pay, then build / update - landfill first, so things can stand on it
+    for (Vec2i t : plan.fill) {
+        player.inventory.tryRemoveAll(landfillTileCost());
+        world.addLandfill(t);
+    }
     std::vector<int> ids;
     for (size_t i = 0; i < reqs.size(); ++i) {
         const PlaceRequest& r = reqs[i];
@@ -388,6 +403,37 @@ bool Builder::turnAt(Vec2i t, int steps) {
         return false;   // nothing there, or a miner / chest
     }
     world.markTopologyDirty();
+    return true;
+}
+
+const ItemAmounts& landfillTileCost() {
+    static const ItemAmounts c = {{itemByStringId("limestone"), 10}};
+    return c;
+}
+
+Builder::LandfillCheck Builder::checkLandfill(Vec2i tl, int size) const {
+    LandfillCheck c;
+    World& w = const_cast<World&>(world);   // reading water generates terrain
+    size = std::clamp(size, LANDFILL_MIN, LANDFILL_MAX);
+    for (int dy = 0; dy < size; ++dy)
+        for (int dx = 0; dx < size; ++dx) {
+            Vec2i t{tl.x + dx, tl.y + dy};
+            if (requireExplored && !tileExplored(t)) { c.status = PlaceStatus::Undiscovered; return c; }
+            if (!w.isWater(t)) continue;   // land (or already filled): left as it is
+            c.tiles.push_back(t);
+            for (auto& p : landfillTileCost()) addAmount(c.cost, p.first, p.second);
+        }
+    if (c.tiles.empty()) c.status = PlaceStatus::NoWater;
+    else if (!player.inventory.hasEnough(c.cost)) c.status = PlaceStatus::NoFunds;
+    return c;
+}
+
+bool Builder::placeLandfill(Vec2i tl, int size, ItemAmounts* delta) {
+    LandfillCheck c = checkLandfill(tl, size);
+    if (c.status != PlaceStatus::Ok) return false;
+    player.inventory.tryRemoveAll(c.cost);
+    for (Vec2i t : c.tiles) world.addLandfill(t);
+    if (delta) { delta->clear(); for (auto& p : c.cost) addAmount(*delta, p.first, -p.second); }
     return true;
 }
 
@@ -630,8 +676,16 @@ static std::vector<PlaceRequest> blueprintRequests(const Blueprint& bp, Vec2i tl
     return reqs;
 }
 
+static std::vector<Vec2i> blueprintFill(const Blueprint& bp, Vec2i tl) {
+    std::vector<Vec2i> out;
+    out.reserve(bp.landfill.size());
+    for (Vec2i o : bp.landfill) out.push_back(tl + o);
+    return out;
+}
+
 Builder::BlueprintCheck Builder::checkBlueprint(const Blueprint& bp, Vec2i tl, bool allowReplace) const {
-    PlacePlan plan = planPlacement(blueprintRequests(bp, tl), allowReplace, nullptr, true);
+    auto fill = blueprintFill(bp, tl);
+    PlacePlan plan = planPlacement(blueprintRequests(bp, tl), allowReplace, nullptr, true, &fill);
     BlueprintCheck c;
     c.status = plan.status;
     c.cost = plan.cost;
@@ -643,7 +697,8 @@ Builder::BlueprintCheck Builder::checkBlueprint(const Blueprint& bp, Vec2i tl, b
 bool Builder::placeBlueprint(const Blueprint& bp, Vec2i tl, bool allowReplace, ItemAmounts* delta) {
     if (bp.empty()) return false;
     auto reqs = blueprintRequests(bp, tl);
-    PlacePlan plan = planPlacement(reqs, allowReplace, nullptr, true);
+    auto fill = blueprintFill(bp, tl);
+    PlacePlan plan = planPlacement(reqs, allowReplace, nullptr, true, &fill);
     if (plan.status != PlaceStatus::Ok) return false;   // all or nothing
     if (delta) *delta = plan.delta;
     executePlacement(reqs, plan);
@@ -684,6 +739,15 @@ Builder::UndoResult Builder::undo(const UndoRecord& rec, ItemAmounts* delta, Und
         const Machine& m = world.machine(id);
         for (Vec2i c : footprint(m.pos, m.w, m.h)) freed.insert(c);
     }
+    // landfill: tiles to turn back into water must still be landfill with
+    // nothing on them (except what this undo removes); tiles to fill again
+    // must be water
+    for (Vec2i t : rec.landfillAdded) {
+        if (!world.isLandfill(t)) return UndoResult::Changed;
+        if (world.isCellBlocked(t) && !freed.count(t)) return UndoResult::Blocked;
+    }
+    for (Vec2i t : rec.landfillRemoved)
+        if (!world.isWater(t)) return UndoResult::Changed;
     std::unordered_set<Vec2i, Vec2iHash> taken;
     for (const ObjSnap& s : rec.removed) {
         int w = s.belt ? 1 : s.machine->w, h = s.belt ? 1 : s.machine->h;
@@ -698,6 +762,10 @@ Builder::UndoResult Builder::undo(const UndoRecord& rec, ItemAmounts* delta, Und
     for (auto& p : refundTotals(belts, machines)) addAmount(net, p.first, p.second);
     for (const ObjSnap& s : rec.removed)
         for (auto& p : snapValue(s)) addAmount(net, p.first, -p.second);
+    for (auto& c : landfillTileCost()) {
+        addAmount(net, c.first, c.second * int(rec.landfillAdded.size()));     // limestone back
+        addAmount(net, c.first, -c.second * int(rec.landfillRemoved.size()));  // filled again: pay
+    }
     ItemAmounts pay, get;
     for (auto& p : net) {
         if (p.second < 0) addAmount(pay, p.first, -p.second);
@@ -714,6 +782,8 @@ Builder::UndoResult Builder::undo(const UndoRecord& rec, ItemAmounts* delta, Und
     player.inventory = scratch;
     for (int id : belts) world.removeBelt(id);
     for (int id : machines) world.removeMachine(id);
+    for (Vec2i t : rec.landfillAdded) world.removeLandfill(t);
+    for (Vec2i t : rec.landfillRemoved) world.addLandfill(t);
     for (const ObjSnap& s : rec.removed) {
         if (s.belt) {
             const Belt& old = s.beltState;
