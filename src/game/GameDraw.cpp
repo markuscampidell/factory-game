@@ -507,6 +507,32 @@ void GameScreen::drawItems() {
         }
 }
 
+// Belts / bridges that feed a machine or that it outputs onto continue a
+// tile into the machine: the same sprite on its edge tile, drawn before the
+// machine, so it shows through the transparent parts of the machine sprite
+// and the two look connected.
+void GameScreen::drawMachineConnections(const Machine& m, unsigned char alpha) {
+    if (m.isSplitter()) return;
+    const bool takesInput = m.isStorage() || ((m.type == MachineType::Smelter || m.type == MachineType::Assembler));
+    forEachOutputTile(m, [&](const OutputTile& ot) {
+        Dir out = ot.dir;                                     // away from the machine
+        bool inputSide = takesInput && !(machineHasOutputSides(m.type) && isOutputSide(m.type, m.dir, out));
+        bool outputSide = m.isStorage() || isOutputSide(m.type, m.dir, out);
+        Vec2i inner = ot.tile - dirVec(out);                  // the machine's own edge tile
+        Rectangle r{float(inner.x * CELL_SIZE), float(inner.y * CELL_SIZE), CELL_SIZE, CELL_SIZE};
+        if (const Belt* b = world_.beltAt(ot.tile)) {
+            if (b->dir == opposite(out) && inputSide)          // feeds the machine: runs on into it
+                drawTexture(assets::belt(dirBit(b->dir), b->dir), r, Color{255, 255, 255, alpha});
+            else if (b->incomingMask & dirBit(out))            // the machine pushes onto it: comes out of it
+                drawTexture(assets::belt(dirBit(out), out), r, Color{255, 255, 255, alpha});
+        }
+        if (const Belt* br = world_.bridgeAt(ot.tile)) {
+            if ((br->dir == opposite(out) && inputSide) || (br->dir == out && outputSide))
+                drawBridgeSprite(r, br->dir, alpha, br->dir == out, br->dir != out);
+        }
+    });
+}
+
 void GameScreen::drawMachines() {
     int l, t, r, b;
     cam_.visibleTiles(l, t, r, b);
@@ -520,6 +546,7 @@ void GameScreen::drawMachines() {
             const Machine& m = world_.machine(id);
             Vector2 p = toScreen(float(m.pos.x * CELL_SIZE), float(m.pos.y * CELL_SIZE));
             Rectangle dest{p.x, p.y, float(m.w * CELL_SIZE), float(m.h * CELL_SIZE)};
+            drawMachineConnections(m, groundA);   // under the sprite: shows where the machine is see-through
             assets::drawMachine(m.type, m.dir, dest, Color{255, 255, 255, groundA});
             // output sides: while building, and on the machine under the mouse
             if (hasSideArrows(m.type) && (buildingNow || hovered_ == -(id + 1))) drawOutputSideArrows(m.type, m.dir, dest);
