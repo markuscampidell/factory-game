@@ -794,7 +794,9 @@ void GameScreen::overlayBeltSprite(uint8_t mask, Dir d, Rectangle r, Color c) {
 
 void GameScreen::overlayMachine(MachineType t, Dir d, Rectangle r, Color c) {
     overlayBegin();
-    if (overlayOk_) assets::drawMachine(t, d, r, c);
+    if (overlayOk_ && t == MachineType::Pipe)   // a pipe: in the shape it has there
+        assets::drawPipe(world_.pipeMask({int(std::floor(r.x / CELL_SIZE)), int(std::floor(r.y / CELL_SIZE))}), r, c);
+    else if (overlayOk_) assets::drawMachine(t, d, r, c);
     else DrawRectangleRec(r, c);
     overlayEnd();
 }
@@ -1142,8 +1144,7 @@ void GameScreen::drawDeleteGhost() {
         for (int mid : ids) {   // Shift on a pipe: the whole pipe system
             const Machine& m = world_.machine(mid);
             Vector2 p = toScreen(float(m.pos.x * CELL_SIZE), float(m.pos.y * CELL_SIZE));
-            if (m.isPipe()) DrawRectangleRec({p.x, p.y, CELL_SIZE, CELL_SIZE}, c);
-            else overlayMachine(m.type, m.dir, {p.x, p.y, float(m.w * CELL_SIZE), float(m.h * CELL_SIZE)}, c);
+            overlayMachine(m.type, m.dir, {p.x, p.y, float(m.w * CELL_SIZE), float(m.h * CELL_SIZE)}, c);   // only its solid pixels
         }
     }
 }
