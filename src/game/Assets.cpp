@@ -88,7 +88,12 @@ void load() {
     g_cross[int(Dir::Down)] = loadOrPlaceholder(c + "crosssection/down_right_left_to_down.png");
     // pipes: one sprite per shape, drawn in a base orientation and turned (see drawPipe)
     const char* pipeFiles[6] = {"pipe_single", "pipe_end", "pipe_corner", "pipe_straight", "pipe_t", "pipe_cross"};
-    for (int i = 0; i < 6; ++i) g_pipes[i] = loadOrPlaceholder(std::string("assets/sprites/pipes/") + pipeFiles[i] + ".png");
+    for (int i = 0; i < 6; ++i) {
+        g_pipes[i] = loadOrPlaceholder(std::string("assets/sprites/pipes/") + pipeFiles[i] + ".png");
+        // clamp: at fractional zoom the edge pixels must not sample the opposite
+        // edge (the flange there showed up as thin lines at the tile borders)
+        SetTextureWrap(g_pipes[i], TEXTURE_WRAP_CLAMP);
+    }
 
     // Arial on Windows; otherwise (browser, Linux) the bundled Liberation Sans,
     // which has exactly Arial's letter widths, so the layout is the same.
