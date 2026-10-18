@@ -56,7 +56,23 @@ struct Belt {
 // ---------------------------------------------------------------------------
 // Machines (smelter, assembler, miner, storage, splitter)
 // ---------------------------------------------------------------------------
-enum class MachineType : uint8_t { Smelter, Assembler, Splitter, Storage, Miner, WaterPump, Count };
+enum class MachineType : uint8_t { Smelter, Assembler, Splitter, Storage, Miner, WaterPump, Pipe, Count };
+
+// ---------------------------------------------------------------------------
+// Fluids. Pipes (1 x 1) connect to pipes and water pumps on all four sides;
+// every connected group of pipes is one network = one tank of
+// PIPE_CAPACITY per pipe holding one fluid (or nothing). Each pipe keeps its
+// share (network amount / pipe count) so saving, splitting and deleting are
+// simple: a deleted pipe takes its share with it. Water pumps hold up to
+// PUMP_CAPACITY, make PUMP_RATE per second and put it straight into every
+// connected network that is empty or holds water.
+// ---------------------------------------------------------------------------
+enum class Fluid : uint8_t { None, Water, Count };
+const char* fluidName(Fluid f);        // "Water" ("" for None)
+const char* fluidSaveId(Fluid f);      // "water"
+Fluid fluidFromSaveId(const std::string& s);
+constexpr double PIPE_CAPACITY = 100, PUMP_CAPACITY = 100, PUMP_RATE = 10;   // units, units, units per second
+inline bool connectsPipes(MachineType t) { return t == MachineType::Pipe || t == MachineType::WaterPump; }
 
 // A miner digs one ore every 2 s; mining by hand is half that speed.
 constexpr int MINER_TICKS = 2 * TICKS_PER_SECOND;
@@ -146,10 +162,16 @@ struct Machine {
 
     std::vector<InputAnim> anims;
 
+    // --- fluids (pipes: their share of the network; water pumps: their buffer) ---
+    Fluid fluid = Fluid::None;
+    double fluidAmount = 0;
+    int fluidNet = -1;                    // pipes: network index (rebuilt with the layout)
+
     bool isProducing() const {
         return type == MachineType::Smelter || type == MachineType::Assembler || type == MachineType::Miner;
     }
     bool isSplitter() const { return type == MachineType::Splitter; }
+    bool isPipe() const { return type == MachineType::Pipe; }
     bool isStorage() const { return type == MachineType::Storage; }
     RectF pixelRect() const {
         return {float(pos.x * CELL_SIZE), float(pos.y * CELL_SIZE), float(w * CELL_SIZE), float(h * CELL_SIZE)};
@@ -323,6 +345,19 @@ public:
     void markTopologyDirty() { topologyDirty_ = true; }
     void ensureTopology();      // recompute incoming masks + transport order
 
+    // ---- fluids (see Fluid) ----
+    struct FluidNet {
+        std::vector<int> pipes;    // machine ids
+        std::vector<int> pumps;    // water pumps touching it
+        Fluid fluid = Fluid::None;
+        double amount = 0;
+        double capacity() const { return PIPE_CAPACITY * double(pipes.size()); }
+    };
+    const std::vector<FluidNet>& fluidNets() { ensureTopology(); return fluidNets_; }
+    const FluidNet* fluidNetOf(int pipeId);          // nullptr if not a pipe
+    // Which sides of tile t have a pipe / water pump (for a pipe at t): bit i = Dir(i).
+    uint8_t pipeMask(Vec2i t) const;
+
     // ---- simulation ----
     void tick();                // one fixed simulation step
     uint64_t tickCount() const { return tickCount_; }
@@ -357,6 +392,10 @@ private:
     void rebuildTransportOrder();
     void transportTick();
     void machinesTick();
+    void fluidTick();
+    void rebuildFluidNets();
+    void shareFluid(FluidNet& n);   // every pipe of n gets its share
+    std::vector<FluidNet> fluidNets_;
 
     std::unordered_map<Vec2i, std::unique_ptr<Chunk>, Vec2iHash> chunks_;
     std::unordered_set<Vec2i, Vec2iHash> explored_;

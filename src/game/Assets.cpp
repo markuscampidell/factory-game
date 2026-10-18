@@ -15,6 +15,7 @@ bool g_machineLoaded[int(MachineType::Count)] = {};
 Texture2D g_machinesFlat[int(MachineType::Count)];      // "<sprite>_flat.png", optional
 bool g_machineFlatLoaded[int(MachineType::Count)] = {};
 Texture2D g_straight[4], g_curve[4][4], g_inter[4][4], g_opposite[4], g_cross[4];
+Texture2D g_pipes[6];   // single, end, corner, straight, T, cross
 std::map<std::pair<int, bool>, Font> g_fonts;
 std::string g_fontPath, g_boldPath;
 
@@ -85,6 +86,9 @@ void load() {
     g_cross[int(Dir::Left)] = loadOrPlaceholder(c + "crosssection/down_left_up_to_left.png");
     g_cross[int(Dir::Up)] = loadOrPlaceholder(c + "crosssection/right_left_up_to_up.png");
     g_cross[int(Dir::Down)] = loadOrPlaceholder(c + "crosssection/down_right_left_to_down.png");
+    // pipes: one sprite per shape, drawn in a base orientation and turned (see drawPipe)
+    const char* pipeFiles[6] = {"pipe_single", "pipe_end", "pipe_corner", "pipe_straight", "pipe_t", "pipe_cross"};
+    for (int i = 0; i < 6; ++i) g_pipes[i] = loadOrPlaceholder(std::string("assets/sprites/pipes/") + pipeFiles[i] + ".png");
 
     // Arial on Windows; otherwise (browser, Linux) the bundled Liberation Sans,
     // which has exactly Arial's letter widths, so the layout is the same.
@@ -138,6 +142,21 @@ void drawMachine(MachineType t, Dir d, Rectangle dest, Color tint) {
         return;
     }
     fillRound(dest, 4, Color{120, 120, 140, tint.a});
+}
+
+// Base orientations of the pipe sprites: end = right, corner = right + down,
+// straight = left + right, T = left + right + down (no up). Turned clockwise
+// in quarter turns to match `mask` (bit i = a pipe / pump on side Dir(i)).
+void drawPipe(uint8_t mask, Rectangle dest, Color tint) {
+    auto has = [&](int d) { return (mask >> (d & 3)) & 1; };
+    int n = has(0) + has(1) + has(2) + has(3);
+    int sprite = 0, turns = 0;
+    if (n == 1) { sprite = 1; for (int d = 0; d < 4; ++d) if (has(d)) turns = d; }
+    else if (n == 2 && has(0) == has(2)) { sprite = 3; turns = has(0) ? 0 : 1; }
+    else if (n == 2) { sprite = 2; for (int d = 0; d < 4; ++d) if (has(d) && has(d + 1)) turns = d; }
+    else if (n == 3) { sprite = 4; for (int d = 0; d < 4; ++d) if (!has(d)) turns = d - 3; }   // the missing side is Up (3) in the sprite
+    else if (n == 4) sprite = 5;
+    drawTexture(g_pipes[sprite], dest, tint, 90.0f * float((turns % 4 + 4) % 4));
 }
 
 const Texture2D& belt(uint8_t mask, Dir out) {

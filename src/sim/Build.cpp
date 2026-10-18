@@ -18,6 +18,22 @@ const ItemAmounts& bridgeBuildCost() {
 // ---------------------------------------------------------------------------
 // Shared
 // ---------------------------------------------------------------------------
+// A pipe at t would join whatever fluids its neighbours hold (pipes: their
+// network's fluid, water pumps: water) - more than one kind can't be mixed.
+bool pipeWouldMixFluids(const World& w, Vec2i t) {
+    Fluid seen = Fluid::None;
+    for (int i = 0; i < 4; ++i) {
+        TileRef r = w.refAt(t + dirVec(Dir(i)));
+        if (r >= 0) continue;
+        const Machine& m = w.machine(-r - 1);
+        Fluid f = m.type == MachineType::WaterPump ? Fluid::Water : m.isPipe() ? m.fluid : Fluid::None;
+        if (f == Fluid::None) continue;
+        if (seen != Fluid::None && seen != f) return true;
+        seen = f;
+    }
+    return false;
+}
+
 bool touchesWater(World& w, MachineType t, Vec2i tl, Dir d) {
     Vec2i s = machineSize(t, d);
     for (int i = 0; i < s.x; ++i)
@@ -128,7 +144,7 @@ PlacePlan Builder::planPlacement(const std::vector<PlaceRequest>& reqs, bool all
     World& w = const_cast<World&>(world);   // reading ore generates terrain; nothing else changes
     std::set<int> rmBelts, rmMachines;
     ItemAmounts cost, refunds;
-    bool blocked = false, noOre = false, undiscovered = false, outOfReach = false, onWater = false, needsWater = false;
+    bool blocked = false, noOre = false, undiscovered = false, outOfReach = false, onWater = false, needsWater = false, fluidMix = false;
     // landfill that comes with it (blueprints): the water tiles get filled first
     std::unordered_set<Vec2i, Vec2iHash> filled;
     if (fill)
@@ -223,6 +239,7 @@ PlacePlan Builder::planPlacement(const std::vector<PlaceRequest>& reqs, bool all
                 for (Vec2i c : cells)
                     if (wet(c)) { st = PlaceStatus::OnWater; break; }
                 if (st == PlaceStatus::Ok && r.type == MachineType::WaterPump && !touchesWater(w, r.type, r.pos, r.dir)) st = PlaceStatus::NeedsWater;
+                if (st == PlaceStatus::Ok && r.type == MachineType::Pipe && pipeWouldMixFluids(world, r.pos)) st = PlaceStatus::FluidMix;
             }
             if (st == PlaceStatus::Ok && keep < 0) {
                 if (r.type == MachineType::Miner && firstOre(w, r.type, r.pos, r.dir) == NO_ITEM) st = PlaceStatus::NoOre;
@@ -233,6 +250,7 @@ PlacePlan Builder::planPlacement(const std::vector<PlaceRequest>& reqs, bool all
         noOre |= st == PlaceStatus::NoOre;
         onWater |= st == PlaceStatus::OnWater;
         needsWater |= st == PlaceStatus::NeedsWater;
+        fluidMix |= st == PlaceStatus::FluidMix;
         plan.each.push_back(st);
         plan.existing.push_back(keep);
     }
@@ -336,6 +354,7 @@ PlacePlan Builder::planPlacement(const std::vector<PlaceRequest>& reqs, bool all
     if (undiscovered) { plan.status = PlaceStatus::Undiscovered; return plan; }
     if (onWater) { plan.status = PlaceStatus::OnWater; return plan; }
     if (needsWater) { plan.status = PlaceStatus::NeedsWater; return plan; }
+    if (fluidMix) { plan.status = PlaceStatus::FluidMix; return plan; }
     if (noOre) { plan.status = PlaceStatus::NoOre; return plan; }
 
     // simulate on a copy: refunds in, cost out - same order as executePlacement

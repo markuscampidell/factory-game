@@ -92,6 +92,7 @@ void GameScreen::draw() {
     drawStoragePanel();
     drawBeltFilterPanel();
     drawSplitterFilterPanel();
+    drawFluidPanel();
     drawCostInfo();
     drawBlueprintList();
     drawHotbar();
@@ -227,6 +228,7 @@ Color machineMapColor(MachineType t) {
         case MachineType::Storage: return {170, 120, 60, 255};
         case MachineType::Miner: return {230, 200, 40, 255};
         case MachineType::WaterPump: return {120, 215, 235, 255};
+        case MachineType::Pipe: return {105, 125, 150, 255};
         default: return {200, 200, 200, 255};
     }
 }
@@ -588,6 +590,10 @@ void GameScreen::drawMachines() {
             const Machine& m = world_.machine(id);
             Vector2 p = toScreen(float(m.pos.x * CELL_SIZE), float(m.pos.y * CELL_SIZE));
             Rectangle dest{p.x, p.y, float(m.w * CELL_SIZE), float(m.h * CELL_SIZE)};
+            if (m.isPipe()) {   // shape from what it connects to; nothing else on a pipe
+                assets::drawPipe(world_.pipeMask(m.pos), dest, Color{255, 255, 255, groundA});
+                continue;
+            }
             drawMachineConnections(m, groundA);   // under the sprite: shows where the machine is see-through
             for (const GhostStub& g : ghostStubs_)   // the same for the belt / bridge you hold
                 if (m.occupies(g.tile)) {
@@ -905,7 +911,8 @@ void GameScreen::drawGhostMachine() {
 
     Vector2 p = toScreen(float(tl.x * CELL_SIZE), float(tl.y * CELL_SIZE));
     Rectangle dest{p.x, p.y, float(size.x * CELL_SIZE), float(size.y * CELL_SIZE)};
-    assets::drawMachine(type, dir, dest, Color{255, 255, 255, 120});
+    if (type == MachineType::Pipe) assets::drawPipe(world_.pipeMask(tl), dest, Color{255, 255, 255, 140});   // its shape where it would go
+    else assets::drawMachine(type, dir, dest, Color{255, 255, 255, 120});
     drawOutputSideArrows(type, dir, dest, 200);
     // Alt mode: what the new machine will make (its default recipe)
     if (showOutputs_) {
@@ -920,6 +927,7 @@ void GameScreen::drawGhostMachine() {
         case PlaceStatus::NoFunds: overlay = {255, 255, 0, 80}; break;
         case PlaceStatus::NoOre: overlay = {128, 0, 128, 80}; break;
         case PlaceStatus::OnWater: case PlaceStatus::NeedsWater: overlay = {40, 110, 230, 110}; break;
+        case PlaceStatus::FluidMix: overlay = {255, 0, 0, 80}; break;
         case PlaceStatus::Undiscovered: overlay = {20, 20, 20, 170}; break;
         default: break;
     }

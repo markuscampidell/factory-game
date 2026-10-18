@@ -250,6 +250,7 @@ void GameScreen::placeHeldBlueprint(Vector2 mouse) {
         case PlaceStatus::Blocked: floatText(w.x, w.y, "Something is in the way (Shift: replace it)", BAD_RED); return;
         case PlaceStatus::NoOre: floatText(w.x, w.y, "A miner here would have no ore under it", BAD_RED); return;
         case PlaceStatus::OnWater: floatText(w.x, w.y, "Nothing can be built on water", BAD_RED); return;
+        case PlaceStatus::FluidMix: floatText(w.x, w.y, "Pipes with different fluids can't be connected", BAD_RED); return;
         case PlaceStatus::NeedsWater: floatText(w.x, w.y, "A water pump has to stand right next to water", BAD_RED); return;
         case PlaceStatus::NoFunds: floatText(w.x, w.y, "Not enough items in your inventory", BAD_RED); return;
         case PlaceStatus::NoSpace: floatText(w.x, w.y, "Not enough inventory space for what gets replaced", BAD_RED); return;
@@ -723,6 +724,7 @@ void GameScreen::drawCostInfo() {
             case PlaceStatus::NoFunds: reason = "Not enough items in your inventory"; swatch = {255, 255, 0, 255}; break;
             case PlaceStatus::NoOre: reason = "A miner needs ore under it"; swatch = {128, 0, 128, 255}; break;
             case PlaceStatus::OnWater: reason = "Nothing can be built on water"; swatch = {40, 110, 230, 255}; break;
+            case PlaceStatus::FluidMix: reason = "Pipes with different fluids can't be connected"; swatch = {255, 0, 0, 255}; break;
             case PlaceStatus::NeedsWater: reason = "A water pump has to stand right next to water (the highlighted shore)"; swatch = {40, 110, 230, 255}; break;
             case PlaceStatus::NoWater: reason = "Landfill only goes on water"; swatch = {255, 0, 0, 255}; break;
             case PlaceStatus::TooLong: reason = "Bridges are at most 4 tiles in a row - continue with a belt"; swatch = {255, 0, 0, 255}; break;

@@ -20,6 +20,7 @@ void drawMachine(MachineType t, Dir d, Rectangle dest, Color tint = WHITE);
 // Belt sprite for a tile with these incoming travel directions (bitmask)
 // and this outgoing direction - same rules as BeltSegmentSpriteManager.
 const Texture2D& belt(uint8_t incomingMask, Dir out);
+void drawPipe(uint8_t connections, Rectangle dest, Color tint = WHITE);   // bit i = connected on side Dir(i)
 
 // Fonts are created on demand per pixel size.
 const Font& font(int size, bool bold = false);

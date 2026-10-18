@@ -186,6 +186,12 @@ json machineToJson(const Machine& m) {
         j["output_filters"] = filters;
         j["progress"] = m.progress;              // C++ extra
         j["output_index"] = m.outputIndex;       // C++ extra
+    } else if (machineTurnable(m.type)) {
+        j["direction"] = dirToJson(m.dir);       // a water pump lying on its side
+    }
+    if (connectsPipes(m.type) && m.fluid != Fluid::None && m.fluidAmount > 0) {   // pipe share / pump buffer
+        j["fluid"] = fluidSaveId(m.fluid);
+        j["fluid_amount"] = m.fluidAmount;
     }
     return j;
 }
@@ -212,8 +218,17 @@ std::unique_ptr<Machine> machineFromJson(const json& j, ItemAmounts& lost) {
         Dir d = Dir::Right;   // output sides right + top (also for older saves)
         if (j.contains("direction")) dirFromJson(j["direction"], d);
         m = makeMachine(type, pos, d);
+    } else if (machineTurnable(type)) {   // a water pump: standing / lying
+        Dir d = Dir::Right;
+        if (j.contains("direction")) dirFromJson(j["direction"], d);
+        m = makeMachine(type, pos, d);
     } else {
         m = makeMachine(type, pos);
+    }
+    if (connectsPipes(type) && j.contains("fluid") && j["fluid"].is_string()) {
+        m->fluid = fluidFromSaveId(j["fluid"].get<std::string>());
+        m->fluidAmount = std::clamp(j.value("fluid_amount", 0.0), 0.0, type == MachineType::Pipe ? PIPE_CAPACITY : PUMP_CAPACITY);
+        if (m->fluid == Fluid::None) m->fluidAmount = 0;
     }
 
     if (m->isProducing()) {

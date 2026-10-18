@@ -21,7 +21,7 @@
 enum class BuildMode { None, Building, Deleting };
 // Landfill isn't a machine: it turns water into land (see Builder::placeLandfill).
 // Bridge: a belt on the bridge layer (see Belt in World.hpp).
-enum class Buildable { Smelter, Assembler, Belt, Splitter, Storage, Miner, WaterPump, Landfill, Bridge };
+enum class Buildable { Smelter, Assembler, Belt, Splitter, Storage, Miner, WaterPump, Landfill, Bridge, Pipe };
 
 inline Buildable toBuildable(MachineType t) {
     switch (t) {
@@ -30,6 +30,7 @@ inline Buildable toBuildable(MachineType t) {
         case MachineType::Storage: return Buildable::Storage;
         case MachineType::Miner: return Buildable::Miner;
         case MachineType::WaterPump: return Buildable::WaterPump;
+        case MachineType::Pipe: return Buildable::Pipe;
         default: return Buildable::Smelter;
     }
 }
@@ -42,6 +43,7 @@ inline MachineType toMachine(Buildable b) {
         case Buildable::Storage: return MachineType::Storage;
         case Buildable::Miner: return MachineType::Miner;
         case Buildable::WaterPump: return MachineType::WaterPump;
+        case Buildable::Pipe: return MachineType::Pipe;
         default: return MachineType::Smelter;
     }
 }
@@ -281,6 +283,10 @@ private:
     int machinePanel_ = -1;       // machine id (producing machine)
     int storagePanel_ = -1;
     int splitterPanel_ = -1;
+    int fluidPanel_ = -1;            // a pipe or water pump: its fluid (see drawFluidPanel)
+    Vec2i fluidPanelPos_;
+    Rectangle fluidRect() const;
+    void drawFluidPanel();
     int beltPanel_ = -1;          // belt id
     Vec2i beltPanelPos_;
     Vec2i machinePanelPos_, storagePanelPos_, splitterPanelPos_;
@@ -297,7 +303,7 @@ private:
     //    rectangle around them is centred on the screen.
     //  * Starting to build (hotbar, middle click, Ctrl+C/X/B) or opening the
     //    Game Menu closes all panels.
-    enum class Panel { Inventory, Craft, Machine, Storage, Belt, Splitter, Blueprints };
+    enum class Panel { Inventory, Craft, Machine, Storage, Belt, Splitter, Blueprints, Fluid };
     bool isOpen(Panel p) const;
     Rectangle panelRect(Panel p) const;
     Vector2 inventorySize() const;

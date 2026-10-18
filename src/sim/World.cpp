@@ -17,6 +17,7 @@ const MachineSpec& machineSpec(MachineType t) {
         {"miner", "Miner", 2, 3, "assets/sprites/machines/miner.png", {{iron, 5}}},
         // must stand right next to water; does nothing yet (water will go into pipes)
         {"water_pump", "Water Pump", 1, 2, "assets/sprites/machines/water_pump.png", {{iron, 5}, {copper, 3}}},
+        {"pipe", "Pipe", 1, 1, "assets/sprites/pipes/pipe_single.png", {{iron, 1}}},
     };
     return specs[int(t)];
 }
@@ -565,6 +566,7 @@ void World::ensureTopology() {
         });
     }
     rebuildTransportOrder();
+    rebuildFluidNets();
     topologyDirty_ = false;
 }
 
@@ -575,6 +577,7 @@ void World::tick() {
     ensureTopology();
     transportTick();
     machinesTick();
+    fluidTick();
     ++tickCount_;
 }
 
@@ -586,4 +589,99 @@ ItemAmounts World::countItems() const {
         if (m && m->alive)
             for (auto& p : m->contents()) addAmount(out, p.first, p.second);
     return out;
+}
+
+// ---------------------------------------------------------------------------
+// Fluids
+// ---------------------------------------------------------------------------
+const char* fluidName(Fluid f) { return f == Fluid::Water ? "Water" : ""; }
+const char* fluidSaveId(Fluid f) { return f == Fluid::Water ? "water" : ""; }
+Fluid fluidFromSaveId(const std::string& s) { return s == "water" ? Fluid::Water : Fluid::None; }
+
+uint8_t World::pipeMask(Vec2i t) const {
+    uint8_t mask = 0;
+    for (int i = 0; i < 4; ++i) {
+        TileRef r = refAt(t + dirVec(Dir(i)));
+        if (r < 0 && connectsPipes(machines_[size_t(-r - 1)]->type)) mask |= dirBit(Dir(i));
+    }
+    return mask;
+}
+
+const World::FluidNet* World::fluidNetOf(int id) {
+    ensureTopology();
+    if (!machineAlive(id) || !machines_[size_t(id)]->isPipe()) return nullptr;
+    int n = machines_[size_t(id)]->fluidNet;
+    return n >= 0 && size_t(n) < fluidNets_.size() ? &fluidNets_[size_t(n)] : nullptr;
+}
+
+void World::shareFluid(FluidNet& n) {
+    if (n.amount <= 1e-9) { n.amount = 0; n.fluid = Fluid::None; }
+    double share = n.pipes.empty() ? 0 : n.amount / double(n.pipes.size());
+    for (int id : n.pipes) {
+        machines_[size_t(id)]->fluidAmount = share;
+        machines_[size_t(id)]->fluid = n.fluid;
+    }
+}
+
+// Groups the pipes into networks (flood fill) and adds up their shares.
+void World::rebuildFluidNets() {
+    fluidNets_.clear();
+    for (auto& mp : machines_)
+        if (mp && mp->alive && mp->isPipe()) mp->fluidNet = -1;
+    for (int start = 0; start < int(machines_.size()); ++start) {
+        if (!machineAlive(start) || !machines_[size_t(start)]->isPipe() || machines_[size_t(start)]->fluidNet >= 0) continue;
+        FluidNet net;
+        int idx = int(fluidNets_.size());
+        std::vector<int> todo{start};
+        machines_[size_t(start)]->fluidNet = idx;
+        std::vector<int> pumps;
+        while (!todo.empty()) {
+            int id = todo.back();
+            todo.pop_back();
+            Machine& p = *machines_[size_t(id)];
+            net.pipes.push_back(id);
+            net.amount += p.fluidAmount;
+            if (p.fluid != Fluid::None && p.fluidAmount > 0 && net.fluid == Fluid::None) net.fluid = p.fluid;
+            for (int i = 0; i < 4; ++i) {
+                TileRef r = refAt(p.pos + dirVec(Dir(i)));
+                if (r >= 0) continue;
+                int nid = -r - 1;
+                Machine& n = *machines_[size_t(nid)];
+                if (n.type == MachineType::WaterPump) {
+                    if (std::find(pumps.begin(), pumps.end(), nid) == pumps.end()) pumps.push_back(nid);
+                } else if (n.isPipe() && n.fluidNet < 0) {
+                    n.fluidNet = idx;
+                    todo.push_back(nid);
+                }
+            }
+        }
+        net.pumps = pumps;
+        net.amount = std::min(net.amount, net.capacity());
+        fluidNets_.push_back(net);
+        shareFluid(fluidNets_.back());
+    }
+}
+
+void World::fluidTick() {
+    const double perTick = PUMP_RATE / double(TICKS_PER_SECOND);
+    for (auto& mp : machines_) {
+        if (!mp || !mp->alive || mp->type != MachineType::WaterPump) continue;
+        mp->fluid = Fluid::Water;
+        mp->fluidAmount = std::min(PUMP_CAPACITY, mp->fluidAmount + perTick);
+    }
+    // pumps put their water straight into the networks they touch
+    for (FluidNet& n : fluidNets_) {
+        if (n.pumps.empty() || (n.fluid != Fluid::None && n.fluid != Fluid::Water)) continue;   // other fluid: the water stays in the pump
+        bool changed = false;
+        for (int pid : n.pumps) {
+            Machine& p = *machines_[size_t(pid)];
+            double move = std::min(p.fluidAmount, n.capacity() - n.amount);
+            if (move <= 0) continue;
+            p.fluidAmount -= move;
+            n.amount += move;
+            n.fluid = Fluid::Water;
+            changed = true;
+        }
+        if (changed) shareFluid(n);
+    }
 }

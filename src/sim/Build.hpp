@@ -26,7 +26,8 @@
 // TooLong: more than BRIDGE_MAX_LENGTH bridge tiles in a row.
 // Unconnected: a bridge whose first tile nothing points straight into (no
 // belt, splitter or machine behind it) - bridges can't float in the air.
-enum class PlaceStatus : uint8_t { Ok, Blocked, NoSpace, NoFunds, NoOre, Undiscovered, OutOfReach, OnWater, NeedsWater, NoWater, TooLong, Unconnected };
+// FluidMix: a pipe would connect pipes / pumps holding different fluids.
+enum class PlaceStatus : uint8_t { Ok, Blocked, NoSpace, NoFunds, NoOre, Undiscovered, OutOfReach, OnWater, NeedsWater, NoWater, TooLong, Unconnected, FluidMix };
 
 // Landfill turns water into land: 10 limestone per water tile. Placed as a
 // square of LANDFILL_MIN..LANDFILL_MAX tiles per side (+ / - or Shift + mouse
@@ -37,6 +38,7 @@ const ItemAmounts& landfillTileCost();
 // Water pumps must have water right next to them (one of the tiles around
 // their footprint, not diagonally).
 bool touchesWater(World& w, MachineType t, Vec2i topLeft, Dir d);
+bool pipeWouldMixFluids(const World& w, Vec2i tile);   // see PlaceStatus::FluidMix
 
 const ItemAmounts& beltBuildCost();
 const ItemAmounts& bridgeBuildCost();   // double a belt

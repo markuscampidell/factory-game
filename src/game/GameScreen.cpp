@@ -506,6 +506,7 @@ void GameScreen::perFrame() {
     if (machinePanel_ >= 0 && offscreen(world_.machine(machinePanel_))) closeAllPanels();
     if (storagePanel_ >= 0 && offscreen(world_.machine(storagePanel_))) closeAllPanels();
     if (splitterPanel_ >= 0 && offscreen(world_.machine(splitterPanel_))) { splitterPanel_ = -1; picker_.reset(); }
+    if (fluidPanel_ >= 0 && offscreen(world_.machine(fluidPanel_))) fluidPanel_ = -1;
     if (beltPanel_ >= 0) {
         Vec2i p = world_.belt(beltPanel_).pos;
         float sx = float(p.x * CELL_SIZE) - cam_.x, sy = float(p.y * CELL_SIZE) - cam_.y;
@@ -524,6 +525,7 @@ void GameScreen::validatePanels() {
     if (hadPair && machinePanel_ < 0 && storagePanel_ < 0) invOpen_ = false;   // its machine is gone
     int before = splitterPanel_;
     check(splitterPanel_, splitterPanelPos_);
+    check(fluidPanel_, fluidPanelPos_);
     if (beltPanel_ >= 0 && (beltPanel_ >= int(world_.belts().size()) || !world_.belt(beltPanel_).alive ||
                             world_.belt(beltPanel_).pos != beltPanelPos_))
         beltPanel_ = -1;
@@ -610,7 +612,7 @@ void GameScreen::handleKeys(const Event& e) {
         }
         return;
     }
-    if (invOpen_ || machinePanel_ >= 0 || storagePanel_ >= 0 || beltPanel_ >= 0 || splitterPanel_ >= 0) return;
+    if (invOpen_ || machinePanel_ >= 0 || storagePanel_ >= 0 || beltPanel_ >= 0 || splitterPanel_ >= 0 || fluidPanel_ >= 0) return;
     if (e.key == KEY_R && mode_ == BuildMode::Building) { rotateSelected(shiftDown() ? -1 : 1); return; }
     if (e.key == KEY_T && mode_ == BuildMode::Building) { rotateSelected(2); return; }
     // not building: R / Shift + R / T turn the belt, splitter, smelter or
@@ -773,7 +775,7 @@ Vec2i GameScreen::mouseTile() const { return screenToTile(ui::mouse()); }
 // ---------------------------------------------------------------------------
 void GameScreen::handlePlacement(const Event& e) {
     if (mapMode() || bpMode_ != BpMode::None) return;
-    if (invOpen_ || machinePanel_ >= 0 || storagePanel_ >= 0 || beltPanel_ >= 0 || splitterPanel_ >= 0) return;
+    if (invOpen_ || machinePanel_ >= 0 || storagePanel_ >= 0 || beltPanel_ >= 0 || splitterPanel_ >= 0 || fluidPanel_ >= 0) return;
     if (e.type == EvType::MouseUp && e.button == MB_LEFT) {
         lastDragged_.reset();
         dragPlaced_.clear();
@@ -823,7 +825,7 @@ void GameScreen::handlePlacement(const Event& e) {
 
 void GameScreen::updateDrag() {
     if (mapMode() || bpMode_ != BpMode::None) return;
-    if (invOpen_ || machinePanel_ >= 0 || storagePanel_ >= 0 || beltPanel_ >= 0 || splitterPanel_ >= 0) return;
+    if (invOpen_ || machinePanel_ >= 0 || storagePanel_ >= 0 || beltPanel_ >= 0 || splitterPanel_ >= 0 || fluidPanel_ >= 0) return;
     if (!IsMouseButtonDown(MOUSE_BUTTON_LEFT)) return;
     if (mode_ == BuildMode::Building && holdingLineTool()) return;
     if (overHudButtons(ui::mouse())) return;
@@ -895,6 +897,13 @@ void GameScreen::tryPlaceMachineAt(Vec2i tile) {
     if (lastDragged_ && *lastDragged_ == tile) return;
     ItemAmounts delta;
     int id = builder_.placeMachine(toMachine(selected_), tile, Dir(splitterRot_), shiftDown(), &dragPlaced_, &delta);
+    if (id < 0 && toMachine(selected_) == MachineType::Pipe &&
+        builder_.checkMachine(MachineType::Pipe, tile, Dir::Right, shiftDown()) == PlaceStatus::FluidMix &&
+        !(lastDragged_ && *lastDragged_ == tile)) {
+        floatText(float(tile.x * CELL_SIZE + CELL_SIZE / 2), float(tile.y * CELL_SIZE), "Pipes with different fluids can't be connected",
+                  Color{255, 110, 110, 255});
+        lastDragged_ = tile;
+    }
     if (id >= 0) {
         lastDragged_ = tile;
         dragPlaced_.insert(id);
@@ -948,6 +957,7 @@ bool GameScreen::mouseOverOpenPanel(Vector2 p) const {
     if (storagePanel_ >= 0 && inRect(storageRect(), p)) return true;
     if (beltPanel_ >= 0 && inRect(beltFilterRect(), p)) return true;
     if (splitterPanel_ >= 0 && inRect(splitterFilterRect(), p)) return true;
+    if (fluidPanel_ >= 0 && inRect(fluidRect(), p)) return true;
     if (bpListOpen_ && inRect(bpListRect(), p)) return true;
     if (bpSaveOpen_ && inRect(bpSaveRect(), p)) return true;
     return false;
@@ -997,6 +1007,10 @@ void GameScreen::worldClick(const Event& e) {
             makeRoomFor(Panel::Splitter);
             splitterPanel_ = id;
             splitterPanelPos_ = m.pos;
+        } else if (connectsPipes(m.type)) {   // pipe / water pump: how much fluid
+            makeRoomFor(Panel::Fluid);
+            fluidPanel_ = id;
+            fluidPanelPos_ = m.pos;
         }
     } else if (r > 0) {
         makeRoomFor(Panel::Belt);
@@ -1021,6 +1035,7 @@ void GameScreen::pickKey(const Event& e) {
             case MachineType::Storage: select(Buildable::Storage); break;
             case MachineType::Miner: select(Buildable::Miner); break;
             case MachineType::WaterPump: select(Buildable::WaterPump); break;
+            case MachineType::Pipe: select(Buildable::Pipe); break;
             default: break;
         }
     }
@@ -1038,6 +1053,7 @@ bool GameScreen::isOpen(Panel p) const {
         case Panel::Storage: return storagePanel_ >= 0;
         case Panel::Belt: return beltPanel_ >= 0;
         case Panel::Splitter: return splitterPanel_ >= 0;
+        case Panel::Fluid: return fluidPanel_ >= 0;
         case Panel::Blueprints: return bpListOpen_;
     }
     return false;
@@ -1051,6 +1067,7 @@ Rectangle GameScreen::panelRect(Panel p) const {
         case Panel::Storage: return storageRect();
         case Panel::Belt: return beltFilterRect();
         case Panel::Splitter: return splitterFilterRect();
+        case Panel::Fluid: return fluidRect();
         case Panel::Blueprints: return bpListRect();
     }
     return {};
@@ -1064,14 +1081,15 @@ void GameScreen::closePanel(Panel /*p*/) { closeAllPanels(); }
 void GameScreen::makeRoomFor(Panel /*p*/) { closeAllPanels(); }
 
 bool GameScreen::anyPanelOpen() const {
-    return invOpen_ || craftOpen_ || machinePanel_ >= 0 || storagePanel_ >= 0 || beltPanel_ >= 0 || splitterPanel_ >= 0 || bpListOpen_ || bpSaveOpen_;
+    return invOpen_ || craftOpen_ || machinePanel_ >= 0 || storagePanel_ >= 0 || beltPanel_ >= 0 || splitterPanel_ >= 0 || fluidPanel_ >= 0 ||
+           bpListOpen_ || bpSaveOpen_;
 }
 
 void GameScreen::closeAllPanels() {
     invOpen_ = false;
     if (craftOpen_) { player_.craftMode = CraftMode::None; player_.craftTicks = 0; }
     craftOpen_ = false;
-    machinePanel_ = storagePanel_ = beltPanel_ = splitterPanel_ = -1;
+    machinePanel_ = storagePanel_ = beltPanel_ = splitterPanel_ = fluidPanel_ = -1;
     picker_.reset();
     bpListOpen_ = false;
     bpDeleteConfirm_.reset();
@@ -1098,7 +1116,7 @@ bool GameScreen::closeTopPanel() {
 bool GameScreen::panelCloseClick(const Event& e) {
     if (e.type != EvType::MouseDown || e.button != MB_LEFT) return false;
     // (the blueprint list handles its own X in blueprintHandle)
-    const Panel order[] = {Panel::Splitter, Panel::Belt, Panel::Storage, Panel::Machine, Panel::Craft, Panel::Inventory};
+    const Panel order[] = {Panel::Fluid, Panel::Splitter, Panel::Belt, Panel::Storage, Panel::Machine, Panel::Craft, Panel::Inventory};
     for (Panel p : order) {
         if (!isOpen(p) || !inRect(panelCloseRect(panelRect(p)), e.pos)) continue;
         closePanel(p);   // closes the pair
@@ -1122,7 +1140,8 @@ namespace {
 struct HotbarSlot { int kind; Buildable b; }; // kind 0 something to build, 1 none, 2 delete
 const HotbarSlot HOTBAR[] = {
     {0, Buildable::Smelter}, {0, Buildable::Assembler}, {0, Buildable::Belt},     {0, Buildable::Bridge},  {0, Buildable::Splitter},
-    {0, Buildable::Storage}, {0, Buildable::Miner},     {0, Buildable::WaterPump}, {0, Buildable::Landfill}, {1, Buildable::Smelter},
+    {0, Buildable::Storage}, {0, Buildable::Miner},     {0, Buildable::WaterPump}, {0, Buildable::Pipe},     {0, Buildable::Landfill},
+    {1, Buildable::Smelter},
     {2, Buildable::Smelter},
 };
 constexpr int HOTBAR_N = int(sizeof(HOTBAR) / sizeof(HOTBAR[0]));

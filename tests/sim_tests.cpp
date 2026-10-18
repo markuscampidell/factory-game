@@ -518,6 +518,50 @@ static void testLandfill() {
     std::printf("  landfill: water tiles only, 10 limestone each, undo / redo, saved, in blueprints\n");
 }
 
+// Fluids: pipes connect on all sides, a network is one tank (100 per pipe),
+// a water pump makes 10 per second (holds 100) and fills the network.
+static void testFluids() {
+    World w; w.seed = 1;
+    int pump = w.addMachine(makeMachine(MachineType::WaterPump, {0, 0}));   // 1 x 2 at (0,0)-(0,1)
+    int p1 = w.addMachine(makeMachine(MachineType::Pipe, {1, 0}));
+    int p2 = w.addMachine(makeMachine(MachineType::Pipe, {2, 0}));
+    int p3 = w.addMachine(makeMachine(MachineType::Pipe, {3, 0}));
+    w.addMachine(makeMachine(MachineType::Pipe, {10, 10}));                  // a lone pipe: its own network
+    w.ensureTopology();
+    CHECK(w.fluidNets().size() == 2, "%d networks, expected 2", int(w.fluidNets().size()));
+    CHECK(w.pipeMask({2, 0}) == (dirBit(Dir::Left) | dirBit(Dir::Right)) && w.pipeMask({1, 0}) == (dirBit(Dir::Left) | dirBit(Dir::Right)),
+          "pipe masks %d %d", w.pipeMask({2, 0}), w.pipeMask({1, 0}));
+    for (int t = 0; t < 60; ++t) w.tick();
+    const World::FluidNet* n = w.fluidNetOf(p2);
+    CHECK(n && n->fluid == Fluid::Water && std::fabs(n->amount - 10) < 1e-6 && n->capacity() == 300, "after 1 s: %.3f water", n ? n->amount : -1);
+    CHECK(std::fabs(w.machine(p1).fluidAmount - 10.0 / 3) < 1e-6, "pipe share %.3f", w.machine(p1).fluidAmount);
+    CHECK(w.fluidNetOf(w.machineIdAt({10, 10}))->amount == 0, "the lone pipe got water");
+    for (int t = 0; t < 60 * 40; ++t) w.tick();
+    n = w.fluidNetOf(p2);
+    CHECK(std::fabs(n->amount - 300) < 1e-6 && std::fabs(w.machine(pump).fluidAmount - 100) < 1e-6, "full: net %.2f, pump %.2f", n->amount,
+          w.machine(pump).fluidAmount);
+    // deleting the middle pipe: its share is gone, the rest is split
+    w.removeMachine(p2);
+    w.ensureTopology();
+    CHECK(std::fabs(w.fluidNetOf(p1)->amount - 100) < 1e-6 && std::fabs(w.fluidNetOf(p3)->amount - 100) < 1e-6, "after the split: %.2f / %.2f",
+          w.fluidNetOf(p1)->amount, w.fluidNetOf(p3)->amount);
+    // placing a pipe: water + water is fine
+    CHECK(!pipeWouldMixFluids(w, {2, 0}), "water next to water counted as mixing");
+    // saved and loaded (amounts, fluid, a lying pump)
+    save::setSavesDir("test_saves");
+    w.addMachine(makeMachine(MachineType::WaterPump, {20, 0}, Dir::Down));     // lying 2 x 1
+    Player pl; CameraState cam;
+    CHECK(save::saveGame(w, pl, cam, "fluids"), "save failed");
+    World l; Player lp; CameraState lc;
+    CHECK(save::loadGame(l, lp, lc, "fluids"), "load failed");
+    const World::FluidNet* ln = l.fluidNetOf(l.machineIdAt({3, 0}));
+    CHECK(ln && ln->fluid == Fluid::Water && std::fabs(ln->amount - 100) < 1e-6, "loaded network %.2f", ln ? ln->amount : -1);
+    CHECK(std::fabs(l.machineAt({0, 0})->fluidAmount - 100) < 1e-6, "loaded pump %.2f", l.machineAt({0, 0})->fluidAmount);
+    CHECK(l.machineAt({20, 0}) && l.machineAt({21, 0}) == l.machineAt({20, 0}), "lying pump came back standing");
+    save::remove("fluids");
+    std::printf("  fluids: pipes form networks, pump 10/s into them, shares, split, saved\n");
+}
+
 // Ctrl + left click: take a machine's outputs / a chest's contents.
 static void testTakeContents() {
     World w;
@@ -1560,6 +1604,7 @@ int main(int argc, char** argv) {
     testOutputSides();
     testWater();
     testLandfill();
+    testFluids();
     testOutputSidesSave();
     testTakeContents();
     testPickUpUnderPlayer();

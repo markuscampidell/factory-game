@@ -623,3 +623,39 @@ void GameScreen::craftHandleClick(const Event& e) {
         }
     }
 }
+
+// ---------------------------------------------------------------------------
+// Fluid panel (click a pipe / water pump)
+// ---------------------------------------------------------------------------
+Rectangle GameScreen::fluidRect() const {
+    return centeredRect(std::floor(ui::screenW() / 2), std::floor(ui::panelCenterY()), 340, 150);
+}
+
+void GameScreen::drawFluidPanel() {
+    if (fluidPanel_ < 0) return;
+    const Machine& m = world_.machine(fluidPanel_);
+    Rectangle r = fluidRect();
+    drawPanel(r, m.isPipe() ? "Pipe" : machineSpec(m.type).name);
+    auto amountText = [](Fluid f, double amount, double capacity, int decimals) {
+        char buf[96];
+        std::snprintf(buf, sizeof buf, "%.*f / %.0f %s", decimals, amount, capacity, f == Fluid::None ? "(empty)" : fluidName(f));
+        return std::string(buf);
+    };
+    float y = r.y + 44;
+    if (m.isPipe()) {
+        if (const World::FluidNet* n = world_.fluidNetOf(fluidPanel_)) {
+            // the whole system, then this pipe's share (only worked out here)
+            text("System (" + std::to_string(n->pipes.size()) + (n->pipes.size() == 1 ? " pipe)" : " pipes)"), r.x + 18, y, 16, ui::TEXT_DIM);
+            text(amountText(n->fluid, n->amount, n->capacity(), 0), r.x + 18, y + 20, 22, ui::TEXT, true);
+            double share = n->pipes.empty() ? 0 : n->amount / double(n->pipes.size());
+            text("This pipe", r.x + 18, y + 54, 16, ui::TEXT_DIM);
+            text(amountText(n->fluid, share, PIPE_CAPACITY, 2), r.x + 18, y + 74, 18, ui::TEXT);
+        }
+    } else {
+        text("Holds", r.x + 18, y, 16, ui::TEXT_DIM);
+        text(amountText(m.fluid, m.fluidAmount, PUMP_CAPACITY, 2), r.x + 18, y + 20, 22, ui::TEXT, true);
+        char rate[64];
+        std::snprintf(rate, sizeof rate, "Pumps %.0f water per second into connected pipes", PUMP_RATE);
+        text(rate, r.x + 18, y + 60, 15, ui::TEXT_DIM);
+    }
+}
