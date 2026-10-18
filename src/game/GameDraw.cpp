@@ -913,6 +913,19 @@ void GameScreen::drawGhostMachine() {
     Rectangle dest{p.x, p.y, float(size.x * CELL_SIZE), float(size.y * CELL_SIZE)};
     if (type == MachineType::Pipe) assets::drawPipe(world_.pipeMask(tl), dest, Color{255, 255, 255, 140});   // its shape where it would go
     else assets::drawMachine(type, dir, dest, Color{255, 255, 255, 120});
+    // pipes next to a new pipe / water pump: how they would look with it connected
+    if (connectsPipes(type)) {
+        Machine probe;
+        probe.pos = tl; probe.w = size.x; probe.h = size.y;
+        forEachOutputTile(probe, [&](const OutputTile& ot) {
+            const Machine* n = world_.machineAt(ot.tile);
+            if (!n || !n->isPipe()) return;
+            uint8_t mask = world_.pipeMask(ot.tile) | dirBit(opposite(ot.dir));   // + the side facing the ghost
+            if (mask == world_.pipeMask(ot.tile)) return;
+            Rectangle r{float(ot.tile.x * CELL_SIZE), float(ot.tile.y * CELL_SIZE), CELL_SIZE, CELL_SIZE};
+            assets::drawPipe(mask, r, Color{255, 255, 255, 170});
+        });
+    }
     drawOutputSideArrows(type, dir, dest, 200);
     // Alt mode: what the new machine will make (its default recipe)
     if (showOutputs_) {
