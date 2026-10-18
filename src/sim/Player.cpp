@@ -23,6 +23,29 @@ std::vector<const Machine*> machinesNear(World& w, const RectF& r) {
 
 } // namespace
 
+// Does machine m block the player rectangle p? Only where its sprite is
+// solid (HitMask); the whole footprint if no mask is registered.
+static bool blocks(World& w, const Machine& m, const RectF& p) {
+    RectF mr = m.pixelRect();
+    if (!p.intersects(mr)) return false;
+    int variant = m.isPipe() ? int(w.pipeMask(m.pos)) : int(normalizeMachineDir(m.type, m.dir));
+    const HitMask* hm = hitMask(m.type, variant);
+    if (!hm) return true;
+    float x0 = std::max(p.left(), mr.left()), x1 = std::min(p.right(), mr.right());
+    float y0 = std::max(p.top(), mr.top()), y1 = std::min(p.bottom(), mr.bottom());
+    // check the overlap at every world pixel (a few hundred lookups at most)
+    for (float y = std::floor(y0) + 0.5f; y < y1; y += 1.0f) {
+        if (y < y0) continue;
+        int my = std::clamp(int((y - mr.top()) * float(hm->h) / mr.h), 0, hm->h - 1);
+        for (float x = std::floor(x0) + 0.5f; x < x1; x += 1.0f) {
+            if (x < x0) continue;
+            int mx = std::clamp(int((x - mr.left()) * float(hm->w) / mr.w), 0, hm->w - 1);
+            if (hm->solid[size_t(my * hm->w + mx)]) return true;
+        }
+    }
+    return false;
+}
+
 void Player::update(World& world, int inX, int inY) {
     // Same feel as the Python version: accelerate, then apply friction.
     dx = (dx + float(inX) * SPEED) * FRICTION;
@@ -35,34 +58,35 @@ void Player::update(World& world, int inX, int inY) {
     Vec2i here{int(std::floor(rect.cx() / CELL_SIZE)), int(std::floor(rect.cy() / CELL_SIZE))};
     float k = world.isWater(here) ? WATER_SPEED : 1.0f;
 
+    auto collides = [&]() {
+        for (const Machine* m : machinesNear(world, rect))
+            if (blocks(world, *m, rect)) return true;
+        return false;
+    };
+    // Moves one axis by s; if that runs into something, goes back and creeps
+    // up to it a pixel at a time (machines can have any shape now).
+    auto moveAxis = [&](float& pos, float& vel, float& s) {
+        pos += s;
+        if (!collides()) return;
+        pos -= s;
+        float sign = s > 0 ? 1.0f : -1.0f, left = std::fabs(s);
+        while (left > 0) {
+            float st = std::min(1.0f, left);
+            pos += sign * st;
+            if (collides()) { pos -= sign * st; break; }
+            left -= st;
+        }
+        vel = s = 0;
+    };
+
     // Move in small steps (at most a quarter tile each), so even a very
     // fast player can't jump over a machine between two checks.
     const float maxStep = CELL_SIZE / 4.0f;
     int steps = int(std::ceil(std::max(std::fabs(dx * k), std::fabs(dy * k)) / maxStep));
     float sx = steps > 0 ? dx * k / float(steps) : 0, sy = steps > 0 ? dy * k / float(steps) : 0;
-    for (int k = 0; k < steps; ++k) {
-        if (sx != 0) {
-            rect.x += sx;
-            for (const Machine* m : machinesNear(world, rect)) {
-                RectF mr = m->pixelRect();
-                if (rect.intersects(mr)) {
-                    if (sx > 0) rect.x = mr.left() - rect.w;
-                    else rect.x = mr.right();
-                    dx = sx = 0;
-                }
-            }
-        }
-        if (sy != 0) {
-            rect.y += sy;
-            for (const Machine* m : machinesNear(world, rect)) {
-                RectF mr = m->pixelRect();
-                if (rect.intersects(mr)) {
-                    if (sy > 0) rect.y = mr.top() - rect.h;
-                    else rect.y = mr.bottom();
-                    dy = sy = 0;
-                }
-            }
-        }
+    for (int i = 0; i < steps; ++i) {
+        if (sx != 0) moveAxis(rect.x, dx, sx);
+        if (sy != 0) moveAxis(rect.y, dy, sy);
     }
 }
 

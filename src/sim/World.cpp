@@ -685,3 +685,16 @@ void World::fluidTick() {
         if (changed) shareFluid(n);
     }
 }
+
+// ---------------------------------------------------------------------------
+// Pixel hitboxes (see HitMask)
+// ---------------------------------------------------------------------------
+static HitMask g_hitMasks[int(MachineType::Count)][16];
+void setHitMask(MachineType t, int variant, HitMask m) {
+    if (variant >= 0 && variant < 16) g_hitMasks[int(t)][variant] = std::move(m);
+}
+const HitMask* hitMask(MachineType t, int variant) {
+    if (variant < 0 || variant >= 16) return nullptr;
+    const HitMask& m = g_hitMasks[int(t)][variant];
+    return m.solid.empty() ? nullptr : &m;
+}

@@ -562,6 +562,27 @@ static void testFluids() {
     std::printf("  fluids: pipes form networks, pump 10/s into them, shares, split, saved\n");
 }
 
+// Pixel hitboxes: the player only bumps into the solid pixels of a sprite.
+static void testHitMasks() {
+    World w; w.seed = 1;
+    w.addMachine(makeMachine(MachineType::Storage, {2, 0}));   // 2x2 chest at x 64..128 px, y 0..64
+    auto walkRight = [&]() {
+        Player p;
+        p.setCenter(20, 32);
+        for (int t = 0; t < 120; ++t) p.update(w, 1, 0);
+        return p.rect.right();
+    };
+    float full = walkRight();
+    CHECK(std::fabs(full - 64) < 1.01f, "no mask: stopped at %.1f, expected the chest's edge (64)", full);
+    HitMask m; m.w = 4; m.h = 4; m.solid.assign(16, 0);
+    for (int y = 0; y < 4; ++y) for (int x = 2; x < 4; ++x) m.solid[size_t(y * 4 + x)] = 1;   // right half solid
+    setHitMask(MachineType::Storage, 0, m);
+    float half = walkRight();
+    CHECK(std::fabs(half - 96) < 1.01f, "right half solid: stopped at %.1f, expected 96", half);
+    setHitMask(MachineType::Storage, 0, HitMask{});   // (back to the whole footprint for the other tests)
+    std::printf("  pixel hitboxes: the player walks into see-through parts\n");
+}
+
 // Ctrl + left click: take a machine's outputs / a chest's contents.
 static void testTakeContents() {
     World w;
@@ -1605,6 +1626,7 @@ int main(int argc, char** argv) {
     testWater();
     testLandfill();
     testFluids();
+    testHitMasks();
     testOutputSidesSave();
     testTakeContents();
     testPickUpUnderPlayer();

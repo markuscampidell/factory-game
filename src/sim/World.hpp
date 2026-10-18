@@ -111,6 +111,15 @@ inline bool machineDirMatters(MachineType t) { return t == MachineType::Splitter
 // Mirroring left <-> right (blueprints): the output sides are mirrored too.
 Dir mirroredMachineDir(MachineType t, Dir d);
 Vec2i machineSize(MachineType t, Dir d);      // footprint in tiles for that direction
+
+// Pixel hitboxes for walking: which pixels of a machine's sprite are solid,
+// per machine type and variant (its normalized direction 0..3; pipes: their
+// connection mask 0..15). The game registers them from the sprites (see
+// assets::load); without one the whole footprint is solid (headless tests).
+// The mask is stretched over the footprint like the sprite.
+struct HitMask { int w = 0, h = 0; std::vector<uint8_t> solid; };
+void setHitMask(MachineType t, int variant, HitMask m);
+const HitMask* hitMask(MachineType t, int variant);   // nullptr: none registered
 bool machineTypeFromSave(const std::string& s, MachineType& out);
 
 // One input/output buffer of a producing machine: a 1x1 inventory that only

@@ -42,6 +42,8 @@ std::string pickFont(std::initializer_list<const char*> candidates) {
 
 } // namespace
 
+static void registerHitMasks();   // (below)
+
 void load() {
     const auto& items = allItems();
     g_items.assign(items.size(), Texture2D{});
@@ -94,6 +96,7 @@ void load() {
         // edge (the flange there showed up as thin lines at the tile borders)
         SetTextureWrap(g_pipes[i], TEXTURE_WRAP_CLAMP);
     }
+    registerHitMasks();   // walking: only the solid pixels of the sprites block
 
     // Arial on Windows; otherwise (browser, Linux) the bundled Liberation Sans,
     // which has exactly Arial's letter widths, so the layout is the same.
@@ -152,16 +155,75 @@ void drawMachine(MachineType t, Dir d, Rectangle dest, Color tint) {
 // Base orientations of the pipe sprites: end = right, corner = right + down,
 // straight = left + right, T = left + right + down (no up). Turned clockwise
 // in quarter turns to match `mask` (bit i = a pipe / pump on side Dir(i)).
-void drawPipe(uint8_t mask, Rectangle dest, Color tint) {
+// Which pipe sprite (0 single .. 5 cross) and how many clockwise quarter
+// turns draw a pipe with these connections.
+static void pipeVariant(uint8_t mask, int& sprite, int& turns) {
     auto has = [&](int d) { return (mask >> (d & 3)) & 1; };
     int n = has(0) + has(1) + has(2) + has(3);
-    int sprite = 0, turns = 0;
+    sprite = 0; turns = 0;
     if (n == 1) { sprite = 1; for (int d = 0; d < 4; ++d) if (has(d)) turns = d; }
     else if (n == 2 && has(0) == has(2)) { sprite = 3; turns = has(0) ? 0 : 1; }
     else if (n == 2) { sprite = 2; for (int d = 0; d < 4; ++d) if (has(d) && has(d + 1)) turns = d; }
     else if (n == 3) { sprite = 4; for (int d = 0; d < 4; ++d) if (!has(d)) turns = d - 3; }   // the missing side is Up (3) in the sprite
     else if (n == 4) sprite = 5;
-    drawTexture(g_pipes[sprite], dest, tint, 90.0f * float((turns % 4 + 4) % 4));
+    turns = (turns % 4 + 4) % 4;
+}
+
+void drawPipe(uint8_t mask, Rectangle dest, Color tint) {
+    int sprite, turns;
+    pipeVariant(mask, sprite, turns);
+    drawTexture(g_pipes[sprite], dest, tint, 90.0f * float(turns));
+}
+
+// Pixel hitboxes for walking (see HitMask): the solid pixels of every
+// machine sprite, the way drawMachine / drawPipe draw them.
+static HitMask maskOf(const Image& img) {
+    HitMask m;
+    m.w = img.width;
+    m.h = img.height;
+    m.solid.assign(size_t(m.w * m.h), 0);
+    Color* px = LoadImageColors(img);
+    for (int i = 0; i < m.w * m.h; ++i) m.solid[size_t(i)] = px[i].a > 40;   // (almost) see-through: walkable
+    UnloadImageColors(px);
+    return m;
+}
+
+static void registerHitMasks() {
+    for (int ti = 0; ti < int(MachineType::Count); ++ti) {
+        MachineType t = MachineType(ti);
+        std::string path = machineSpec(t).sprite;
+        if (t == MachineType::Pipe || !FileExists(path.c_str())) continue;
+        Image base = LoadImage(path.c_str());
+        std::string flatPath = path.substr(0, path.size() - 4) + "_flat.png";
+        bool hasFlat = FileExists(flatPath.c_str());
+        for (int d = 0; d < 4; ++d) {
+            Dir nd = normalizeMachineDir(t, Dir(d));
+            Image img;
+            if (t == MachineType::Splitter) {                       // turns with its direction
+                img = ImageCopy(base);
+                for (int k = 0; k < d; ++k) ImageRotateCW(&img);
+            } else if (nd == Dir::Down && machineSpec(t).w != machineSpec(t).h) {   // lying
+                if (hasFlat) img = LoadImage(flatPath.c_str());
+                else { img = ImageCopy(base); ImageRotateCW(&img); }
+            } else {
+                img = ImageCopy(base);
+            }
+            setHitMask(t, int(nd), maskOf(img));
+            UnloadImage(img);
+        }
+        UnloadImage(base);
+    }
+    const char* pipeFiles[6] = {"pipe_single", "pipe_end", "pipe_corner", "pipe_straight", "pipe_t", "pipe_cross"};
+    for (int mask = 0; mask < 16; ++mask) {
+        int sprite, turns;
+        pipeVariant(uint8_t(mask), sprite, turns);
+        std::string path = std::string("assets/sprites/pipes/") + pipeFiles[sprite] + ".png";
+        if (!FileExists(path.c_str())) continue;
+        Image img = LoadImage(path.c_str());
+        for (int k = 0; k < turns; ++k) ImageRotateCW(&img);
+        setHitMask(MachineType::Pipe, mask, maskOf(img));
+        UnloadImage(img);
+    }
 }
 
 const Texture2D& belt(uint8_t mask, Dir out) {
