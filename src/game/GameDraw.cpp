@@ -69,6 +69,7 @@ void GameScreen::draw() {
         drawItems();
         drawBridges();   // one level up - but under machines (they never overlap), so items
                          // coming out of / going into a machine slide under its sprite
+        computeGhostStubs();
         drawMachines();
         drawPlayer();
         drawHoverHighlight();
@@ -511,13 +512,20 @@ void GameScreen::drawItems() {
 // tile into the machine: the same sprite on its edge tile, drawn before the
 // machine, so it shows through the transparent parts of the machine sprite
 // and the two look connected.
+// Does machine m take items in through its side facing `out` (pointing away
+// from it) / push items out through it?
+static bool takesInputOn(const Machine& m, Dir out) {
+    bool takes = m.isStorage() || m.type == MachineType::Smelter || m.type == MachineType::Assembler;
+    return takes && !(machineHasOutputSides(m.type) && isOutputSide(m.type, m.dir, out));
+}
+static bool givesOutputOn(const Machine& m, Dir out) { return m.isStorage() || isOutputSide(m.type, m.dir, out); }
+
 void GameScreen::drawMachineConnections(const Machine& m, unsigned char alpha) {
     if (m.isSplitter()) return;
-    const bool takesInput = m.isStorage() || ((m.type == MachineType::Smelter || m.type == MachineType::Assembler));
     forEachOutputTile(m, [&](const OutputTile& ot) {
         Dir out = ot.dir;                                     // away from the machine
-        bool inputSide = takesInput && !(machineHasOutputSides(m.type) && isOutputSide(m.type, m.dir, out));
-        bool outputSide = m.isStorage() || isOutputSide(m.type, m.dir, out);
+        bool inputSide = takesInputOn(m, out);
+        bool outputSide = givesOutputOn(m, out);
         Vec2i inner = ot.tile - dirVec(out);                  // the machine's own edge tile
         Rectangle r{float(inner.x * CELL_SIZE), float(inner.y * CELL_SIZE), CELL_SIZE, CELL_SIZE};
         if (const Belt* b = world_.beltAt(ot.tile)) {
@@ -531,6 +539,40 @@ void GameScreen::drawMachineConnections(const Machine& m, unsigned char alpha) {
                 drawBridgeSprite(r, br->dir, alpha, br->dir == out, br->dir != out);
         }
     });
+}
+
+// Holding a belt / bridge: where its ghost would connect to a machine, the
+// piece that goes under the machine (drawn in drawMachines, like placed ones).
+void GameScreen::computeGhostStubs() {
+    ghostStubs_.clear();
+    if (mapMode() || mode_ != BuildMode::Building || bpMode_ != BpMode::None) return;
+    auto machineAt = [&](Vec2i t) -> const Machine* {
+        const Machine* m = world_.machineAt(t);
+        return m && !m->isSplitter() ? m : nullptr;
+    };
+    Vec2i mt = mouseTile();
+    if (selected_ == Buildable::Belt) {
+        auto plan = placingBelt_ ? builder_.planBelts(beltStart_, mt, beltDir_) : builder_.planBelts(mt, mt, beltDir_);
+        World::Overlay ov;
+        for (auto& p : plan) ov.belts[p.pos] = p.dir;
+        for (auto& p : plan) {
+            Vec2i front = p.pos + dirVec(p.dir);   // feeds the machine in front of it
+            if (const Machine* m = machineAt(front); m && takesInputOn(*m, opposite(p.dir))) ghostStubs_.push_back({front, p.dir, false, false, false});
+            uint8_t mask = world_.computeIncoming(p.pos, p.dir, &ov);   // fed by a machine beside / behind it
+            for (int d = 0; d < 4; ++d) {
+                Vec2i src = p.pos - dirVec(Dir(d));
+                if ((mask & dirBit(Dir(d))) && machineAt(src)) ghostStubs_.push_back({src, Dir(d), false, false, false});
+            }
+        }
+    } else if (selected_ == Buildable::Bridge) {
+        auto plan = bridgePlan();
+        if (plan.empty()) return;
+        const auto& first = plan.front();
+        const auto& last = plan.back();
+        Vec2i behind = first.pos - dirVec(first.dir), front = last.pos + dirVec(last.dir);
+        if (const Machine* m = machineAt(behind); m && givesOutputOn(*m, first.dir)) ghostStubs_.push_back({behind, first.dir, true, true, false});
+        if (const Machine* m = machineAt(front); m && takesInputOn(*m, opposite(last.dir))) ghostStubs_.push_back({front, last.dir, true, false, true});
+    }
 }
 
 void GameScreen::drawMachines() {
@@ -547,6 +589,12 @@ void GameScreen::drawMachines() {
             Vector2 p = toScreen(float(m.pos.x * CELL_SIZE), float(m.pos.y * CELL_SIZE));
             Rectangle dest{p.x, p.y, float(m.w * CELL_SIZE), float(m.h * CELL_SIZE)};
             drawMachineConnections(m, groundA);   // under the sprite: shows where the machine is see-through
+            for (const GhostStub& g : ghostStubs_)   // the same for the belt / bridge you hold
+                if (m.occupies(g.tile)) {
+                    Rectangle r{float(g.tile.x * CELL_SIZE), float(g.tile.y * CELL_SIZE), CELL_SIZE, CELL_SIZE};
+                    if (g.bridge) drawBridgeSprite(r, g.dir, 190, g.start, g.end);
+                    else drawTexture(assets::belt(dirBit(g.dir), g.dir), r, Color{255, 255, 255, 160});
+                }
             assets::drawMachine(m.type, m.dir, dest, Color{255, 255, 255, groundA});
             // output sides: while building, and on the machine under the mouse
             if (hasSideArrows(m.type) && (buildingNow || hovered_ == -(id + 1))) drawOutputSideArrows(m.type, m.dir, dest);
