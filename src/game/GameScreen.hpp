@@ -469,7 +469,7 @@ private:
     const Texture2D* mapChunkTexture(int cx, int cy);   // nullptr: nothing to show (black)
     void drawPumpShore(Vec2i around);
     void drawMachineConnections(const Machine& m, unsigned char alpha);   // belt / bridge pieces under a machine
-    struct GhostStub { Vec2i tile; Dir dir; bool bridge, start, end; };
+    struct GhostStub { Vec2i tile; Dir dir; bool bridge, start, end; bool pipe = false; };
     std::vector<GhostStub> ghostStubs_;   // the same for the belt / bridge ghost (see computeGhostStubs)
     void computeGhostStubs();   // holding a water pump: the shore tiles where it fits
     bool overHudButtons(Vector2 p) const;

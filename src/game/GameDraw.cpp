@@ -522,8 +522,20 @@ static bool takesInputOn(const Machine& m, Dir out) {
 }
 static bool givesOutputOn(const Machine& m, Dir out) { return m.isStorage() || isOutputSide(m.type, m.dir, out); }
 
+// A straight pipe piece on a fluid machine's edge tile, continuing the pipe
+// outside it (axis of `out`).
+static void drawPipeStub(Vec2i inner, Dir out, unsigned char alpha) {
+    Rectangle r{float(inner.x * CELL_SIZE), float(inner.y * CELL_SIZE), CELL_SIZE, CELL_SIZE};
+    assets::drawPipe(uint8_t(dirBit(out) | dirBit(opposite(out))), r, Color{255, 255, 255, alpha});
+}
+
 void GameScreen::drawMachineConnections(const Machine& m, unsigned char alpha) {
     if (m.isSplitter()) return;
+    if (connectsPipes(m.type) && !m.isPipe())   // fluid machines: the pipes connected to them run on inside
+        forEachOutputTile(m, [&](const OutputTile& ot) {
+            const Machine* n = world_.machineAt(ot.tile);
+            if (n && n->isPipe()) drawPipeStub(ot.tile - dirVec(ot.dir), ot.dir, alpha);
+        });
     forEachOutputTile(m, [&](const OutputTile& ot) {
         Dir out = ot.dir;                                     // away from the machine
         bool inputSide = takesInputOn(m, out);
@@ -566,6 +578,16 @@ void GameScreen::computeGhostStubs() {
                 if ((mask & dirBit(Dir(d))) && machineAt(src)) ghostStubs_.push_back({src, Dir(d), false, false, false});
             }
         }
+    } else if (selected_ == Buildable::Pipe) {
+        for (int d = 0; d < 4; ++d) {
+            Vec2i n = mt + dirVec(Dir(d));
+            const Machine* m = world_.machineAt(n);
+            if (m && connectsPipes(m->type) && !m->isPipe()) {
+                GhostStub g{n, Dir(d), false, false, false};
+                g.pipe = true;
+                ghostStubs_.push_back(g);
+            }
+        }
     } else if (selected_ == Buildable::Bridge) {
         auto plan = bridgePlan();
         if (plan.empty()) return;
@@ -598,7 +620,8 @@ void GameScreen::drawMachines() {
             for (const GhostStub& g : ghostStubs_)   // the same for the belt / bridge you hold
                 if (m.occupies(g.tile)) {
                     Rectangle r{float(g.tile.x * CELL_SIZE), float(g.tile.y * CELL_SIZE), CELL_SIZE, CELL_SIZE};
-                    if (g.bridge) drawBridgeSprite(r, g.dir, 190, g.start, g.end);
+                    if (g.pipe) drawPipeStub(g.tile, g.dir, 160);
+                    else if (g.bridge) drawBridgeSprite(r, g.dir, 190, g.start, g.end);
                     else drawTexture(assets::belt(dirBit(g.dir), g.dir), r, Color{255, 255, 255, 160});
                 }
             assets::drawMachine(m.type, m.dir, dest, Color{255, 255, 255, groundA});
@@ -911,6 +934,14 @@ void GameScreen::drawGhostMachine() {
 
     Vector2 p = toScreen(float(tl.x * CELL_SIZE), float(tl.y * CELL_SIZE));
     Rectangle dest{p.x, p.y, float(size.x * CELL_SIZE), float(size.y * CELL_SIZE)};
+    if (connectsPipes(type) && type != MachineType::Pipe) {   // a fluid machine: the pipes it would connect to run on inside it
+        Machine probe;
+        probe.pos = tl; probe.w = size.x; probe.h = size.y;
+        forEachOutputTile(probe, [&](const OutputTile& ot) {
+            const Machine* n = world_.machineAt(ot.tile);
+            if (n && n->isPipe()) drawPipeStub(ot.tile - dirVec(ot.dir), ot.dir, 160);
+        });
+    }
     if (type == MachineType::Pipe) assets::drawPipe(world_.pipeMask(tl), dest, Color{255, 255, 255, 140});   // its shape where it would go
     else assets::drawMachine(type, dir, dest, Color{255, 255, 255, 120});
     // pipes next to a new pipe / water pump: how they would look with it connected
