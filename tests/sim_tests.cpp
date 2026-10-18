@@ -559,6 +559,18 @@ static void testFluids() {
     CHECK(std::fabs(l.machineAt({0, 0})->fluidAmount - 100) < 1e-6, "loaded pump %.2f", l.machineAt({0, 0})->fluidAmount);
     CHECK(l.machineAt({20, 0}) && l.machineAt({21, 0}) == l.machineAt({20, 0}), "lying pump came back standing");
     save::remove("fluids");
+    {   // Shift + delete: the whole pipe system, refunded
+        World d; d.seed = 1;
+        Player dp; dp.setCenter(-5000, -5000);
+        Builder db(d, dp);
+        for (int x = 0; x < 5; ++x) d.addMachine(makeMachine(MachineType::Pipe, {x, 0}));
+        d.addMachine(makeMachine(MachineType::Pipe, {9, 0}));   // separate
+        d.ensureTopology();
+        CHECK(db.deleteMachineAt({2, 0}, nullptr, true), "shift-delete of a pipe system failed");
+        int left = 0;
+        for (size_t i = 0; i < d.machineSlots(); ++i) left += d.machineAlive(int(i));
+        CHECK(left == 1 && dp.inventory.amount(IRON_INGOT) == 5, "%d pipes left, %d iron back", left, dp.inventory.amount(IRON_INGOT));
+    }
     std::printf("  fluids: pipes form networks, pump 10/s into them, shares, split, saved\n");
 }
 

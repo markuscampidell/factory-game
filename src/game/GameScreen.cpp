@@ -879,7 +879,7 @@ void GameScreen::tryDeleteAt(Vec2i tile) {
     if (!hasGround(layer_) || dragDelete_ == DragDelete::Bridges) return;
     bool deleted = false, landfill = false;
     if (dragDelete_ != DragDelete::Landfill) {
-        deleted = builder_.deleteMachineAt(tile, &got);
+        deleted = builder_.deleteMachineAt(tile, &got, shiftDown());   // Shift on a pipe: the whole pipe system
         if (!deleted) deleted = builder_.deleteBeltAt(tile, shiftDown(), &got);
     }
     // landfill: only where nothing stands on it (a machine / belt on it goes first)

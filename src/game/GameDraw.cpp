@@ -1115,7 +1115,8 @@ void GameScreen::drawDeleteGhost() {
             }
     } else {
         int id = -hoveredDelete_ - 1;
-        canDelete = builder_.canAffordDeletion({}, {id});
+        std::vector<int> ids = shift && world_.machine(id).isPipe() ? builder_.connectedPipes(id) : std::vector<int>{id};
+        canDelete = builder_.canAffordDeletion({}, ids);
         const Machine& m = world_.machine(id);
         if (m.isSplitter()) {
             World::Overlay ov;
@@ -1136,9 +1137,14 @@ void GameScreen::drawDeleteGhost() {
         for (int id : belts) overlayBelt(world_.belt(id), c);
         overlayEnd();
     } else {
-        const Machine& m = world_.machine(-hoveredDelete_ - 1);
-        Vector2 p = toScreen(float(m.pos.x * CELL_SIZE), float(m.pos.y * CELL_SIZE));
-        overlayMachine(m.type, m.dir, {p.x, p.y, float(m.w * CELL_SIZE), float(m.h * CELL_SIZE)}, c);
+        int id0 = -hoveredDelete_ - 1;
+        std::vector<int> ids = shift && world_.machine(id0).isPipe() ? builder_.connectedPipes(id0) : std::vector<int>{id0};
+        for (int mid : ids) {   // Shift on a pipe: the whole pipe system
+            const Machine& m = world_.machine(mid);
+            Vector2 p = toScreen(float(m.pos.x * CELL_SIZE), float(m.pos.y * CELL_SIZE));
+            if (m.isPipe()) DrawRectangleRec({p.x, p.y, CELL_SIZE, CELL_SIZE}, c);
+            else overlayMachine(m.type, m.dir, {p.x, p.y, float(m.w * CELL_SIZE), float(m.h * CELL_SIZE)}, c);
+        }
     }
 }
 

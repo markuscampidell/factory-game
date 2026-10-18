@@ -142,7 +142,9 @@ public:
     bool canAffordDeletion(const std::vector<int>& belts, const std::vector<int>& machines) const;
     // Deletes it with its dependent bridges - all or nothing (inventory space).
     bool deleteObjects(std::vector<int> belts, const std::vector<int>& machines, ItemAmounts* delta = nullptr);
-    bool deleteMachineAt(Vec2i t, ItemAmounts* delta = nullptr);
+    // whole: a pipe takes its whole pipe system (every connected pipe) along
+    bool deleteMachineAt(Vec2i t, ItemAmounts* delta = nullptr, bool whole = false);
+    std::vector<int> connectedPipes(int pipeId) const;   // the pipe system of a pipe (machine ids)
 
     // Switching a machine's recipe hands its contents back to the player.
     // Refuses (returns false) if they don't fit.

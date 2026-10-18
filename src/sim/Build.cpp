@@ -561,10 +561,16 @@ bool Builder::deleteObjects(std::vector<int> belts, const std::vector<int>& mach
     return true;
 }
 
-bool Builder::deleteMachineAt(Vec2i t, ItemAmounts* delta) {
+bool Builder::deleteMachineAt(Vec2i t, ItemAmounts* delta, bool whole) {
     int id = world.machineIdAt(t);
     if (id < 0) return false;
+    if (whole && world.machine(id).isPipe()) return deleteObjects({}, connectedPipes(id), delta);
     return deleteObjects({}, {id}, delta);
+}
+
+std::vector<int> Builder::connectedPipes(int pipeId) const {
+    const World::FluidNet* n = const_cast<World&>(world).fluidNetOf(pipeId);
+    return n ? n->pipes : std::vector<int>{pipeId};
 }
 
 bool Builder::setRecipe(Machine& m, const Recipe* r) {
