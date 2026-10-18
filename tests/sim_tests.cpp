@@ -510,8 +510,8 @@ static void testLandfill() {
         p.inventory.tryAdd(LIME, 100);
         int lime1 = p.inventory.amount(LIME), wetTiles = 0;
         for (int dy = 0; dy < 1; ++dy) for (int dx = 0; dx < 2; ++dx) wetTiles += w.isWater(spot + Vec2i{dx, dy});
-        CHECK(b.checkMachine(MachineType::WaterPump, spot + Vec2i{1, 0}, Dir::Right, false) == PlaceStatus::OnWater, "pump on water without Shift");
-        int id = b.placeMachine(MachineType::WaterPump, spot + Vec2i{1, 0}, Dir::Right, true, nullptr);
+        CHECK(b.checkMachine(MachineType::WaterPump, spot + Vec2i{1, 0}, Dir::Down, false) == PlaceStatus::OnWater, "pump on water without Shift");
+        int id = b.placeMachine(MachineType::WaterPump, spot + Vec2i{1, 0}, Dir::Down, true, nullptr);
         CHECK(id >= 0 && !w.isWater(spot) && p.inventory.amount(LIME) == lime1 - 10 * wetTiles, "Shift + pump on water: id %d, %d limestone for %d tiles",
               id, lime1 - p.inventory.amount(LIME), wetTiles);
     }
@@ -850,7 +850,7 @@ static void testWater() {
     p.inventory.tryAdd(COPPER_INGOT, 100);
     Builder b(w, p);
     // pump (2 x 1): top-left at (shore.x - 1, shore.y) covers shore and its left neighbour, touching the water on the right
-    auto pumpAt = [&](Vec2i tl) { return b.checkMachine(MachineType::WaterPump, tl + Vec2i{1, 0}, Dir::Right, false); };   // mouse -> top-left - (1,0)
+    auto pumpAt = [&](Vec2i tl) { return b.checkMachine(MachineType::WaterPump, tl + Vec2i{1, 0}, Dir::Down, false); };   // mouse -> top-left - (1,0)
     CHECK(pumpAt({shore.x - 1, shore.y}) == PlaceStatus::Ok, "pump next to water: %d", int(pumpAt({shore.x - 1, shore.y})));
     CHECK(pumpAt({shore.x, shore.y}) == PlaceStatus::OnWater, "pump on water: %d", int(pumpAt({shore.x, shore.y})));
     // a pump far inland needs water
@@ -859,7 +859,7 @@ static void testWater() {
     CHECK(!b.placeBelts(water, water, Dir::Right, false), "belt on water placed");
     CHECK(b.placeBelts(shore, shore, Dir::Right, false), "belt on the shore refused");
     w.removeBelt(w.beltIdAt(shore));   // (the pump goes there next)
-    int pump = b.placeMachine(MachineType::WaterPump, shore, Dir::Right, false, nullptr);   // top-left (shore.x - 1, shore.y)
+    int pump = b.placeMachine(MachineType::WaterPump, shore, Dir::Down, false, nullptr);   // top-left (shore.x - 1, shore.y)
     CHECK(pump >= 0 && w.machine(pump).pos == Vec2i(shore.x - 1, shore.y) && w.machine(pump).w == 2 && w.machine(pump).h == 1,
           "2 x 1 pump next to water not placed");
     // old saves: whatever stands on water is deleted on load, contents included, no refund
